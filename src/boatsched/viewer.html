@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Boat Schedule</title>
+<style>
+  :root{
+    --ink:#0d2438;--paper:#f4ece0;--paper2:#eadfcd;--line:#c9b89a;
+    --accent:#c2522d;--accent2:#1f7a8c;
+    --k:#5b8c5a;--b:#1f7a8c;--A:#d99a2b;--B:#a8412a;--mix:#7a3b69;
+    --shadow:0 2px 0 rgba(13,36,56,.12);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    background:radial-gradient(circle at 18% 12%,rgba(31,122,140,.06),transparent 40%),
+      radial-gradient(circle at 85% 8%,rgba(194,82,45,.05),transparent 35%),var(--paper);
+    color:var(--ink);min-height:100vh;padding:32px 20px 80px}
+  .wrap{max-width:1180px;margin:0 auto}
+  header{text-align:center;margin-bottom:8px}
+  .kicker{font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.32em;
+    text-transform:uppercase;color:var(--accent2);margin-bottom:10px}
+  h1{font-size:clamp(34px,6vw,58px);font-weight:800;letter-spacing:-.02em;line-height:.95}
+  h1 .sub{display:block;font-size:.32em;letter-spacing:.3em;font-weight:600;
+    color:var(--line);text-transform:uppercase;margin-top:12px}
+  .rule{height:2px;background:linear-gradient(90deg,transparent,var(--line),transparent);
+    margin:22px auto;max-width:560px}
+  .drop{border:2px dashed var(--line);border-radius:14px;background:rgba(255,255,255,.4);
+    padding:46px 24px;text-align:center;transition:.18s;cursor:pointer;max-width:560px;margin:0 auto}
+  .drop:hover,.drop.over{border-color:var(--accent2);background:rgba(31,122,140,.07)}
+  .drop h2{font-size:20px;margin-bottom:6px}.drop p{color:#6b5d49;font-size:14px}
+  .drop .anchor{font-size:38px;display:block;margin-bottom:10px;opacity:.7}
+  input[type=file]{display:none}
+  .controls{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:6px 0 26px}
+  .seg{display:inline-flex;background:rgba(255,255,255,.5);border:1px solid var(--line);
+    border-radius:999px;padding:4px;gap:2px}
+  .seg button{border:0;background:transparent;font-family:inherit;font-size:14px;font-weight:600;
+    padding:8px 18px;border-radius:999px;cursor:pointer;color:var(--ink);transition:.15s}
+  .seg button.on{background:var(--ink);color:var(--paper)}
+  .legend{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:24px;
+    font-size:13px;font-weight:600}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:13px;height:13px;border-radius:3px;display:inline-block}
+  .day{margin-bottom:38px;animation:rise .5s both}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  .day-head{display:flex;align-items:baseline;gap:14px;margin-bottom:14px;
+    border-bottom:2px solid var(--ink);padding-bottom:6px}
+  .day-head h3{font-size:26px;font-weight:800}
+  .badge{font:600 11px/1 ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;
+    padding:5px 9px;border-radius:6px;color:#fff}
+  .badge.restricted{background:var(--accent2)}.badge.diverse{background:var(--accent)}
+  .day-head .meta{margin-left:auto;font-size:13px;color:#6b5d49;font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px}
+  .boat{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+    box-shadow:var(--shadow)}
+  .boat-top{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--paper2);
+    border-bottom:1px solid var(--line)}
+  .boat-num{font-weight:800;font-size:15px}
+  .boat-tag{margin-left:auto;font:600 10px/1 ui-monospace,monospace;letter-spacing:.1em;
+    text-transform:uppercase;padding:4px 7px;border-radius:5px;color:#fff;background:var(--k)}
+  .boat.mixed .boat-tag{background:var(--mix)}
+  .crew{list-style:none;padding:8px 10px 12px}
+  .crew li{display:flex;align-items:center;gap:9px;padding:5px 4px;font-size:15px}
+  .lv{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;color:#fff;
+    font:700 11px/1 ui-monospace,monospace;flex-shrink:0}
+  .lv-k{background:var(--k)}.lv-b{background:var(--b)}.lv-A{background:var(--A)}.lv-B{background:var(--B)}
+  .kid-table{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+    box-shadow:var(--shadow)}
+  table{border-collapse:collapse;width:100%;font-size:14px}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--paper2)}
+  th{background:var(--ink);color:var(--paper);font-size:12px;letter-spacing:.08em;
+    text-transform:uppercase;position:sticky;top:0}
+  tbody tr:hover{background:rgba(31,122,140,.06)}
+  .name-cell{font-weight:700;display:flex;align-items:center;gap:9px}
+  .pill{display:inline-block;background:var(--paper2);border-radius:5px;padding:2px 7px;
+    margin:1px 2px;font-size:12.5px}
+  footer{text-align:center;margin-top:50px;color:#8a7a62;font-size:12px;
+    font-family:ui-monospace,monospace;letter-spacing:.05em}
+  .hidden{display:none}
+  .err{color:var(--accent);text-align:center;font-weight:600;margin-top:14px;max-width:560px;
+    margin-left:auto;margin-right:auto}
+  .spin{max-width:560px;margin:0 auto;text-align:center;padding:40px 20px}
+  .ring{width:54px;height:54px;border:5px solid var(--paper2);border-top-color:var(--accent2);
+    border-radius:50%;animation:rot 1s linear infinite;margin:0 auto 18px}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .spin p{color:#6b5d49}.spin .big{font-size:19px;font-weight:700;color:var(--ink);margin-bottom:6px}
+  .statline{font-family:ui-monospace,monospace;font-size:12px;color:#8a7a62;margin-top:10px}
+  .summary{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-bottom:26px}
+  .stat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 20px;
+    text-align:center;box-shadow:var(--shadow)}
+  .stat b{display:block;font-size:24px}.stat span{font-size:11px;letter-spacing:.1em;
+    text-transform:uppercase;color:#8a7a62}
+</style></head><body>
+<div class="wrap">
+  <header><div class="kicker">Fleet Roster &middot; Daily Assignments</div>
+    <h1>The Boat Schedule<span class="sub">— hoist the colors —</span></h1></header>
+  <div class="rule"></div>
+
+  <div id="loader">
+    <label class="drop" id="drop" for="file"><span class="anchor">&#9875;</span>
+      <h2>Drop your roster CSV here</h2>
+      <p>or click to choose &middot; columns: name, level &middot; the server will solve it</p>
+    </label>
+    <input type="file" id="file" accept=".csv,text/csv">
+    <div class="err hidden" id="err"></div>
+  </div>
+
+  <div id="solving" class="hidden"><div class="spin">
+    <div class="ring"></div>
+    <div class="big">Plotting the fleet&hellip;</div>
+    <p>Minimizing mixed boats, maximizing diversity, then reducing repeat pairings.</p>
+    <div class="statline" id="elapsed">elapsed 0s</div>
+  </div></div>
+
+  <div id="app" class="hidden">
+    <div class="summary" id="summary"></div>
+    <div class="controls">
+      <div class="seg"><button id="byBoat" class="on">By Boat</button>
+        <button id="byKid">By Person</button></div>
+      <div class="seg"><button id="reload">&#8635; New roster</button></div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div id="view"></div>
+  </div>
+
+  <footer>Served locally &middot; no data leaves your machine</footer>
+</div>
+<script>
+let CFG={levels:["k","b","A","B"],restricted:["Sat","Sun","Tue","Wed"],diverse:["Fri","Mon"]};
+let RESTRICTED,DIVERSE,LV_RANK;
+const DAY_ORDER=["Sat","Sun","Mon","Tue","Wed","Fri"];
+let rows=[],stats=null;
+
+fetch("/config").then(r=>r.json()).then(c=>{CFG=c;
+  RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
+  LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);}).catch(()=>{
+  RESTRICTED=new Set(CFG.restricted);DIVERSE=new Set(CFG.diverse);
+  LV_RANK={};CFG.levels.forEach((l,i)=>LV_RANK[l]=i);});
+
+const $=id=>document.getElementById(id);
+const fileInput=$("file"),drop=$("drop"),err=$("err");
+
+function show(which){
+  for(const s of ["loader","solving","app"]) $(s).classList.add("hidden");
+  $(which).classList.remove("hidden");
+}
+function upload(file){
+  err.classList.add("hidden");
+  const fd=new FormData(); fd.append("file",file);
+  show("solving"); startTimer();
+  fetch("/solve",{method:"POST",body:fd})
+    .then(r=>r.json())
+    .then(j=>{ if(j.error)throw new Error(j.error); poll(j.id); })
+    .catch(e=>{ stopTimer(); err.textContent="&#9888; "+e.message;
+      err.classList.remove("hidden"); show("loader"); });
+}
+let timer,t0;
+function startTimer(){t0=Date.now();timer=setInterval(()=>{
+  $("elapsed").textContent="elapsed "+Math.round((Date.now()-t0)/1000)+"s";},1000);}
+function stopTimer(){clearInterval(timer);}
+function poll(id){
+  fetch("/status?id="+id).then(r=>r.json()).then(j=>{
+    if(j.status==="running"){ setTimeout(()=>poll(id),1200); return; }
+    stopTimer();
+    if(j.status==="error"){ err.textContent="&#9888; "+j.error;
+      err.classList.remove("hidden"); show("loader"); return; }
+    rows=j.result; stats=j.stats; showApp();
+  }).catch(e=>{stopTimer();err.textContent="&#9888; "+e.message;
+    err.classList.remove("hidden");show("loader");});
+}
+
+function dayList(){
+  const d=[...new Set(rows.map(r=>r.day))];
+  d.sort((a,b)=>{const ia=DAY_ORDER.indexOf(a),ib=DAY_ORDER.indexOf(b);
+    return (ia<0?99:ia)-(ib<0?99:ib);}); return d;
+}
+const lvClass=l=>"lv-"+l;
+function dayBadge(d){
+  if(RESTRICTED.has(d))return '<span class="badge restricted">same / adjacent level</span>';
+  if(DIVERSE.has(d))return '<span class="badge diverse">mixed levels</span>';
+  return '';}
+
+function renderSummary(){
+  if(!stats){$("summary").innerHTML="";return;}
+  $("summary").innerHTML=
+    `<div class="stat"><b>${stats.mixed}</b><span>mixed boats</span></div>
+     <div class="stat"><b>${stats.distinct}</b><span>distinct-level total</span></div>
+     <div class="stat"><b>${stats.repeats}</b><span>repeat pairings</span></div>`;
+}
+function renderLegend(){
+  const names={k:"Level k",b:"Level b",A:"Level A",B:"Level B"};
+  let h=""; for(const l of CFG.levels)
+    h+=`<span><i class="dot ${lvClass(l)}"></i>${names[l]||("Level "+l)}</span>`;
+  h+=`<span><i class="dot" style="background:var(--mix)"></i>Mixed boat</span>`;
+  $("legend").innerHTML=h;
+}
+
+// sort a boat's crew by level rank (low->high), then name
+function sortCrew(crew){
+  return crew.slice().sort((a,b)=>
+    (LV_RANK[a.level]??99)-(LV_RANK[b.level]??99) || a.name.localeCompare(b.name));
+}
+// boat sort key: by the boat's MINIMUM level rank, then by spread, then boat id
+function boatKey(crew){
+  const ranks=crew.map(c=>LV_RANK[c.level]??99);
+  return [Math.min(...ranks), Math.max(...ranks)];
+}
+
+function renderByBoat(){
+  const v=$("view"); v.innerHTML="";
+  for(const day of dayList()){
+    const dr=rows.filter(r=>r.day===day);
+    const boatIds=[...new Set(dr.map(r=>r.boat))];
+    let entries=boatIds.map(bo=>({bo,crew:dr.filter(r=>r.boat===bo)}));
+    // SORT BOATS BY LEVEL
+    entries.sort((x,y)=>{
+      const kx=boatKey(x.crew),ky=boatKey(y.crew);
+      return kx[0]-ky[0] || kx[1]-ky[1] ||
+        ((+x.bo||x.bo)-(+y.bo||y.bo))||(""+x.bo).localeCompare(y.bo);
+    });
+    let mixedCount=0,cards="";
+    for(const {bo,crew} of entries){
+      const sorted=sortCrew(crew);
+      const levels=[...new Set(sorted.map(c=>c.level))];
+      const mixed=levels.length>1; if(mixed)mixedCount++;
+      const tag=mixed?`${levels.length} levels`:levels[0];
+      cards+=`<div class="boat ${mixed?'mixed':''}">
+        <div class="boat-top"><span class="boat-num">Boat ${bo}</span>
+          <span class="boat-tag">${tag}</span></div>
+        <ul class="crew">${sorted.map(c=>
+          `<li><span class="lv ${lvClass(c.level)}">${c.level}</span>${c.name}</li>`
+        ).join("")}</ul></div>`;
+    }
+    const meta=RESTRICTED.has(day)?`${mixedCount} mixed boat${mixedCount!==1?'s':''}`
+      :`${entries.length} boats`;
+    v.insertAdjacentHTML("beforeend",
+      `<section class="day"><div class="day-head"><h3>${day}</h3>${dayBadge(day)}
+        <span class="meta">${meta}</span></div><div class="grid">${cards}</div></section>`);
+  }
+}
+
+function renderByKid(){
+  const v=$("view"); v.innerHTML="";
+  const days=dayList(); const idx={};
+  for(const r of rows){(idx[r.day]??={});(idx[r.day][r.boat]??=[]).push(r);}
+  const levelOf={}; rows.forEach(r=>levelOf[r.name]=r.level);
+  const kids=[...new Set(rows.map(r=>r.name))].sort((a,b)=>
+    (LV_RANK[levelOf[a]]??99)-(LV_RANK[levelOf[b]]??99)||a.localeCompare(b));
+  let body="";
+  for(const k of kids){
+    let cells="";
+    for(const d of days){
+      const mine=rows.find(r=>r.name===k&&r.day===d);
+      if(!mine){cells+="<td>&mdash;</td>";continue;}
+      const mates=sortCrew(idx[d][mine.boat].filter(x=>x.name!==k));
+      cells+=`<td><span class="pill">&#9875; ${mine.boat}</span> `+
+        mates.map(m=>`<span class="pill">${m.name}</span>`).join("")+`</td>`;
+    }
+    body+=`<tr><td class="name-cell">
+      <span class="lv ${lvClass(levelOf[k])}">${levelOf[k]}</span>${k}</td>${cells}</tr>`;
+  }
+  v.insertAdjacentHTML("beforeend",
+    `<section class="day"><div class="day-head"><h3>Each Person's Companions</h3>
+      <span class="meta">sorted by level</span></div>
+      <div class="kid-table" style="overflow-x:auto"><table>
+      <thead><tr><th>Person</th>${days.map(d=>`<th>${d}</th>`).join("")}</tr></thead>
+      <tbody>${body}</tbody></table></div></section>`);
+}
+
+let mode="boat";
+const rerender=()=>mode==="boat"?renderByBoat():renderByKid();
+function showApp(){show("app");renderSummary();renderLegend();rerender();}
+
+fileInput.addEventListener("change",e=>{if(e.target.files[0])upload(e.target.files[0]);});
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{
+  e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{
+  e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0];if(f)upload(f);});
+$("byBoat").onclick=function(){mode="boat";this.classList.add("on");
+  $("byKid").classList.remove("on");rerender();};
+$("byKid").onclick=function(){mode="kid";this.classList.add("on");
+  $("byBoat").classList.remove("on");rerender();};
+$("reload").onclick=()=>{rows=[];stats=null;fileInput.value="";show("loader");};
+</script></body></html>

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boatsched"
+version = "0.1.0"
+description = "Boat assignment optimizer with lexicographic level constraints (CP-SAT)."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "ortools>=9.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+
+[project.scripts]
+boatsched = "boatsched.cli:main"
+boatsched-server = "boatsched.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+boatsched = ["viewer.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
