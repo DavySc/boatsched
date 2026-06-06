@@ -29,3 +29,8 @@ htmlcov/
 # project outputs
 schedule.csv
 *.out.csv
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal

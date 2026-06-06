@@ -19,6 +19,7 @@ from urllib.parse import urlparse, parse_qs
 
 from .solver import Config, solve
 from .roster import parse_roster_bytes, RosterError
+from . import db as _db
 
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
@@ -54,7 +55,7 @@ def _extract_multipart(raw: bytes, ctype: str) -> bytes:
     return raw
 
 
-def make_handler(cfg: Config):
+def make_handler(cfg: Config, db_conn=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -107,6 +108,11 @@ def make_handler(cfg: Config):
                 kids = parse_roster_bytes(raw)
             except RosterError as e:
                 self._send(400, {"error": str(e)}); return
+            if db_conn is not None:
+                try:
+                    _db.add_or_update_members(db_conn, kids)
+                except Exception as e:
+                    self._send(500, {"error": f"db error: {e}"}); return
             jid = uuid.uuid4().hex[:12]
             with JOBS_LOCK:
                 JOBS[jid] = dict(status="running", result=None,
@@ -131,6 +137,8 @@ def parse_args(argv=None):
     p.add_argument("--stage-seconds", type=float, default=45, dest="stage_seconds")
     p.add_argument("--seconds", type=float, default=60)
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--db", default=None, metavar="PATH",
+                   help="SQLite database file (created if absent)")
     return p.parse_args(argv)
 
 
@@ -139,7 +147,8 @@ def main(argv=None) -> int:
     cfg = Config(boats=a.boats, levels=a.levels, restricted=a.restricted,
                  diverse=a.diverse, adj=a.adj, stage_seconds=a.stage_seconds,
                  seconds=a.seconds, workers=a.workers)
-    srv = ThreadingHTTPServer((a.host, a.port), make_handler(cfg))
+    db_conn = _db.init_db(a.db) if a.db else None
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(cfg, db_conn))
     print(f"boatsched server at http://localhost:{a.port}")
     print(f"  boats={cfg.boats} levels={list(cfg.levels)}")
     print(f"  restricted={list(cfg.restricted)} diverse={list(cfg.diverse)}")
