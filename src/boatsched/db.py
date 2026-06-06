@@ -1,4 +1,6 @@
 """Database connection and schema initialization."""
+import hashlib as _hashlib
+import secrets as _secrets
 import sqlite3
 from pathlib import Path
 
@@ -126,6 +128,45 @@ def rename_boat(conn: sqlite3.Connection, boat_id: int, name) -> None:
     conn.commit()
 
 
+def set_instructor_password(conn: sqlite3.Connection, member_id: int, password: str) -> None:
+    """Hash and store a scrypt password for an instructor (binary BLOB columns)."""
+    salt = _secrets.token_bytes(32)
+    dk = _hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    conn.execute(
+        "UPDATE instructor SET password_hash=?, password_salt=? WHERE member_id=?",
+        (dk, salt, member_id),
+    )
+    conn.commit()
+
+
+def verify_instructor_login(conn: sqlite3.Connection, name: str, password: str):
+    """Return member_id if (name, password) matches an instructor, else None."""
+    row = conn.execute(
+        "SELECT i.member_id, i.password_hash, i.password_salt"
+        " FROM instructor i JOIN member m ON m.id = i.member_id"
+        " WHERE m.name=? AND i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL",
+        (name,),
+    ).fetchone()
+    if row is None:
+        return None
+    salt = bytes(row["password_salt"])
+    expected = bytes(row["password_hash"])
+    dk = _hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    if _secrets.compare_digest(dk, expected):
+        return row["member_id"]
+    return None
+
+
+def list_instructors(conn: sqlite3.Connection) -> list:
+    """List instructors with name and whether they have a password."""
+    return [dict(r) for r in conn.execute(
+        "SELECT i.member_id AS id, m.name,"
+        " (i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL) AS has_password"
+        " FROM instructor i JOIN member m ON m.id = i.member_id"
+        " ORDER BY m.name"
+    )]
+
+
 def add_yjs_state_column(conn: sqlite3.Connection) -> None:
     """Add yjs_state BLOB to schedule table (idempotent)."""
     try:
@@ -187,8 +228,10 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS instructor (
+            instructor_id INTEGER PRIMARY KEY,
             member_id     INTEGER NOT NULL UNIQUE REFERENCES member(id),
-            instructor_id INTEGER PRIMARY KEY
+            password_hash BLOB,
+            password_salt BLOB
         );
 
         CREATE TABLE IF NOT EXISTS season (

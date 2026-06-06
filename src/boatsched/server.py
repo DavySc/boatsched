@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import importlib.resources as resources
 import json
+import secrets
 import sys
 import threading
 import traceback
@@ -30,11 +31,12 @@ import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from typing import Optional
+from urllib.parse import parse_qs
 
 import pycrdt
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .solver import Config, solve
 from .roster import parse_roster_bytes, RosterError
@@ -47,6 +49,97 @@ JOBS_LOCK = threading.Lock()
 def _viewer_html() -> str:
     return resources.files("boatsched").joinpath("viewer.html").read_text(
         encoding="utf-8")
+
+
+_LOGIN_PAGE = """\
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login — Boat Schedule</title>
+<style>
+:root{{--ink:#0d2438;--paper:#f4ece0;--line:#c9b89a;--accent:#c2522d;--accent2:#1f7a8c}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  background:var(--paper);color:var(--ink);min-height:100vh;
+  display:flex;align-items:center;justify-content:center}}
+.card{{background:#fff;border:1px solid var(--line);border-radius:16px;
+  padding:40px 36px;max-width:360px;width:calc(100% - 32px);
+  box-shadow:0 4px 20px rgba(13,36,56,.12)}}
+h1{{font-size:26px;font-weight:800;text-align:center;margin-bottom:4px}}
+.sub{{font-size:13px;color:#8a7a62;text-align:center;margin-bottom:28px;letter-spacing:.05em}}
+label{{font-weight:700;font-size:13px;display:block;margin-bottom:4px;margin-top:16px}}
+input{{width:100%;font-family:inherit;font-size:15px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:8px;background:#fdf9f4;color:var(--ink)}}
+input:focus{{outline:none;border-color:var(--accent2)}}
+button{{width:100%;margin-top:24px;font-family:inherit;font-size:15px;font-weight:700;
+  padding:12px;border:none;border-radius:8px;background:var(--accent2);color:#fff;cursor:pointer}}
+button:hover{{opacity:.88}}
+.err{{background:rgba(194,82,45,.10);border:1px solid rgba(194,82,45,.3);border-radius:8px;
+  padding:10px 14px;margin-top:16px;color:var(--accent);font-size:14px;
+  font-weight:600;text-align:center}}
+</style></head><body>
+<div class="card">
+  <h1>Boat Schedule</h1><p class="sub">Instructor login</p>
+  {error_html}
+  <form method="post" action="/login">
+    <label for="n">Name</label>
+    <input type="text" id="n" name="name" autocomplete="username" required autofocus>
+    <label for="pw">Password</label>
+    <input type="password" id="pw" name="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+</div></body></html>"""
+
+
+def _login_html(error: bool = False) -> str:
+    err = '<div class="err">Incorrect name or password.</div>' if error else ""
+    return _LOGIN_PAGE.format(error_html=err)
+
+
+_SETUP_PAGE = """\
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Setup — Boat Schedule</title>
+<style>
+:root{{--ink:#0d2438;--paper:#f4ece0;--line:#c9b89a;--accent:#c2522d;--accent2:#1f7a8c}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  background:var(--paper);color:var(--ink);min-height:100vh;
+  display:flex;align-items:center;justify-content:center}}
+.card{{background:#fff;border:1px solid var(--line);border-radius:16px;
+  padding:40px 36px;max-width:400px;width:calc(100% - 32px);
+  box-shadow:0 4px 20px rgba(13,36,56,.12)}}
+h1{{font-size:26px;font-weight:800;text-align:center;margin-bottom:4px}}
+.sub{{font-size:13px;color:#8a7a62;text-align:center;margin-bottom:6px;letter-spacing:.05em}}
+.hint{{font-size:13px;color:#6b5d49;text-align:center;margin-bottom:24px;line-height:1.5}}
+label{{font-weight:700;font-size:13px;display:block;margin-bottom:4px;margin-top:16px}}
+input{{width:100%;font-family:inherit;font-size:15px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:8px;background:#fdf9f4;color:var(--ink)}}
+input:focus{{outline:none;border-color:var(--accent2)}}
+button{{width:100%;margin-top:24px;font-family:inherit;font-size:15px;font-weight:700;
+  padding:12px;border:none;border-radius:8px;background:var(--accent2);color:#fff;cursor:pointer}}
+button:hover{{opacity:.88}}
+.err{{background:rgba(194,82,45,.10);border:1px solid rgba(194,82,45,.3);border-radius:8px;
+  padding:10px 14px;margin-top:16px;color:var(--accent);font-size:14px;
+  font-weight:600;text-align:center}}
+</style></head><body>
+<div class="card">
+  <h1>Boat Schedule</h1>
+  <p class="sub">First-time setup</p>
+  <p class="hint">No instructor accounts exist yet.<br>Create the first one to secure this server.</p>
+  {{error_html}}
+  <form method="post" action="/setup">
+    <label for="n">Name</label>
+    <input type="text" id="n" name="name" autocomplete="username" required autofocus>
+    <label for="pw">Password</label>
+    <input type="password" id="pw" name="password" autocomplete="new-password" required>
+    <button type="submit">Create account</button>
+  </form>
+</div></body></html>"""
+
+
+def _setup_html(error: bool = False) -> str:
+    err = '<div class="err">Name and password are required.</div>' if error else ""
+    return _SETUP_PAGE.format(error_html=err)
 
 
 def _extract_multipart(raw: bytes, ctype: str) -> bytes:
@@ -170,7 +263,7 @@ def _parse_message(buf: bytes):
 def create_app(cfg: Config, db_conn=None) -> FastAPI:
     app = FastAPI(title="boatsched")
 
-    # Run Yjs column migration once on startup
+    # Run DB column migrations once on startup
     if db_conn is not None:
         _db.add_yjs_state_column(db_conn)
 
@@ -178,6 +271,40 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     docs: dict[int, pycrdt.Doc] = {}
     rooms: dict[int, set] = defaultdict(set)
     room_lock = asyncio.Lock()
+
+    # In-memory session store: token → member_id
+    sessions: dict[str, int] = {}
+
+    def _is_open() -> bool:
+        """True when no instructor has a password (bootstrap mode — auth not enforced)."""
+        if db_conn is None:
+            return True
+        row = db_conn.execute(
+            "SELECT 1 FROM instructor WHERE password_hash IS NOT NULL LIMIT 1"
+        ).fetchone()
+        return row is None
+
+    def _auth_member(token: Optional[str]) -> Optional[int]:
+        """Return member_id for a valid session token, 0 in open/no-DB mode, else None."""
+        if token and token in sessions:
+            return sessions[token]
+        if _is_open():
+            return 0  # bootstrap: no passwords set yet
+        return None
+
+    @app.middleware("http")
+    async def _auth_middleware(request: Request, call_next):
+        """Require auth for all paths except login, logout, config, and setup."""
+        public = {"/login", "/logout", "/config", "/setup"}
+        path = request.url.path
+        if path not in public:
+            token = request.cookies.get("bsession")
+            member_id = _auth_member(token)
+            if member_id is None:
+                if path in ("/", "/index.html"):
+                    return RedirectResponse("/login", status_code=303)
+                return JSONResponse({"error": "not authenticated"}, status_code=401)
+        return await call_next(request)
 
     # -----------------------------------------------------------------------
     # Internal helpers
@@ -203,7 +330,13 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     @app.get("/index.html", response_class=HTMLResponse)
     async def root():
-        return _viewer_html()
+        if db_conn is not None and _is_open():
+            no_instructors = db_conn.execute(
+                "SELECT 1 FROM instructor LIMIT 1"
+            ).fetchone() is None
+            if no_instructors:
+                return RedirectResponse("/setup", status_code=303)
+        return HTMLResponse(_viewer_html())
 
     @app.get("/config")
     async def config_endpoint():
@@ -214,6 +347,134 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             "diverse": list(cfg.diverse),
             "db": db_conn is not None,
         }
+
+    # -----------------------------------------------------------------------
+    # Auth — login / logout / session info
+    # -----------------------------------------------------------------------
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(error: int = 0):
+        return _login_html(error=bool(error))
+
+    @app.post("/login")
+    async def do_login(request: Request):
+        body = await request.body()
+        params = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+        name = params.get("name", [""])[0].strip()
+        password = params.get("password", [""])[0]
+        if db_conn is None or _is_open():
+            return RedirectResponse("/", status_code=303)
+        member_id = await asyncio.to_thread(
+            _db.verify_instructor_login, db_conn, name, password)
+        if member_id is None:
+            return RedirectResponse("/login?error=1", status_code=303)
+        token = secrets.token_urlsafe(32)
+        sessions[token] = member_id
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie("bsession", token, httponly=True, samesite="lax")
+        return resp
+
+    @app.post("/logout")
+    async def do_logout(request: Request):
+        token = request.cookies.get("bsession")
+        if token:
+            sessions.pop(token, None)
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie("bsession")
+        return resp
+
+    @app.get("/me")
+    async def me(request: Request):
+        token = request.cookies.get("bsession")
+        member_id = _auth_member(token)
+        if member_id is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+        if member_id == 0:
+            return {"member_id": 0, "name": None}
+        row = await asyncio.to_thread(lambda: db_conn.execute(
+            "SELECT m.name FROM member m JOIN instructor i ON i.member_id = m.id"
+            " WHERE m.id=?", (member_id,)
+        ).fetchone())
+        return {"member_id": member_id, "name": row["name"] if row else None}
+
+    # -----------------------------------------------------------------------
+    # First-time setup (only accessible in open mode — no instructors yet)
+    # -----------------------------------------------------------------------
+
+    @app.get("/setup", response_class=HTMLResponse)
+    async def setup_page(error: int = 0):
+        if db_conn is None or not _is_open():
+            return RedirectResponse("/login", status_code=303)
+        return _setup_html(error=bool(error))
+
+    @app.post("/setup")
+    async def do_setup(request: Request):
+        if db_conn is None or not _is_open():
+            return RedirectResponse("/login", status_code=303)
+        body = await request.body()
+        params = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+        name = params.get("name", [""])[0].strip()
+        password = params.get("password", [""])[0]
+        if not name or not password:
+            return RedirectResponse("/setup?error=1", status_code=303)
+
+        def _create_instructor():
+            row = db_conn.execute(
+                "SELECT id FROM member WHERE name=?", (name,)
+            ).fetchone()
+            member_id = row["id"] if row else db_conn.execute(
+                "INSERT INTO member (name, level) VALUES (?, NULL)", (name,)
+            ).lastrowid
+            db_conn.execute(
+                "INSERT OR IGNORE INTO instructor (member_id) VALUES (?)", (member_id,)
+            )
+            db_conn.commit()
+            return member_id
+
+        member_id = await asyncio.to_thread(_create_instructor)
+        await asyncio.to_thread(_db.set_instructor_password, db_conn, member_id, password)
+        token = secrets.token_urlsafe(32)
+        sessions[token] = member_id
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie("bsession", token, httponly=True, samesite="lax")
+        return resp
+
+    # -----------------------------------------------------------------------
+    # Instructor password management
+    # -----------------------------------------------------------------------
+
+    @app.get("/instructors")
+    async def get_instructors():
+        if db_conn is None:
+            return []
+        return await asyncio.to_thread(_db.list_instructors, db_conn)
+
+    @app.post("/set-password")
+    async def set_password(request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        try:
+            body = await request.json()
+            name = str(body["name"]).strip()
+            password = str(body["password"])
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if not password:
+            return JSONResponse({"error": "password must not be empty"}, status_code=400)
+        row = await asyncio.to_thread(lambda: db_conn.execute(
+            "SELECT i.member_id FROM instructor i JOIN member m ON m.id = i.member_id"
+            " WHERE m.name=?", (name,)
+        ).fetchone())
+        if row is None:
+            return JSONResponse({"error": "not an instructor"}, status_code=404)
+        # In auth mode, only authenticated instructors may change passwords
+        if not _is_open():
+            token = request.cookies.get("bsession")
+            if _auth_member(token) is None:
+                return JSONResponse({"error": "not authenticated"}, status_code=401)
+        await asyncio.to_thread(
+            _db.set_instructor_password, db_conn, row["member_id"], password)
+        return {"ok": True}
 
     # -----------------------------------------------------------------------
     # Seasons
@@ -402,6 +663,10 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     async def collab_ws(ws: WebSocket, schedule_id: int):
         if db_conn is None:
             await ws.close(code=1011, reason="no database")
+            return
+        token = ws.cookies.get("bsession")
+        if _auth_member(token) is None:
+            await ws.close(code=1008, reason="not authenticated")
             return
 
         await ws.accept()

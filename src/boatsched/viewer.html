@@ -118,10 +118,38 @@
   .presence-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;
     box-shadow:0 0 0 2px rgba(34,197,94,.25)}
   .crew li.conflict{background:rgba(194,82,45,.10);outline:2px dashed var(--accent);border-radius:6px}
+  /* Auth / user bar */
+  #user-bar{display:flex;gap:8px;justify-content:flex-end;margin-bottom:10px}
+  /* Password modal */
+  .modal-overlay{position:fixed;inset:0;background:rgba(13,36,56,.45);z-index:200;
+    display:flex;align-items:center;justify-content:center}
+  .modal-overlay.hidden{display:none}
+  .modal-card{background:#fff;border-radius:14px;padding:28px 30px;max-width:420px;
+    width:calc(100% - 32px);box-shadow:0 8px 32px rgba(13,36,56,.2)}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  .modal-head h2{font-size:20px;font-weight:800}
+  .inst-list{list-style:none;display:flex;flex-direction:column;gap:0}
+  .inst-row{display:flex;align-items:center;gap:10px;padding:9px 0;
+    border-bottom:1px solid var(--paper2)}
+  .inst-name{flex:1;font-weight:700}
+  .inst-status{font-size:12px;font-weight:600;color:#8a7a62;white-space:nowrap}
+  .inst-status.set{color:#15803d}
+  .modal-sep{height:1px;background:var(--line);margin:18px 0}
+  .pwd-form-label{font-weight:700;font-size:14px;margin-bottom:10px}
+  .pwd-input{width:100%;font-family:inherit;font-size:14px;padding:9px 12px;
+    border:1px solid var(--line);border-radius:8px;margin-bottom:12px;color:var(--ink)}
+  .pwd-input:focus{outline:none;border-color:var(--accent2)}
+  .modal-actions{display:flex;gap:8px}
 </style></head><body>
 <div class="wrap">
-  <header><div class="kicker">Fleet Roster &middot; Daily Assignments</div>
-    <h1>The Boat Schedule<span class="sub">— hoist the colors —</span></h1></header>
+  <header>
+    <div id="user-bar" class="hidden">
+      <button id="manage-pwd-btn" class="btn-sm">Passwords</button>
+      <button id="logout-btn" class="btn-sm">Logout</button>
+    </div>
+    <div class="kicker">Fleet Roster &middot; Daily Assignments</div>
+    <h1>The Boat Schedule<span class="sub">— hoist the colors —</span></h1>
+  </header>
   <div class="rule"></div>
 
   <div id="loader">
@@ -182,6 +210,27 @@
 
   <footer>Served locally &middot; no data leaves your machine</footer>
 </div>
+
+<!-- Password management modal -->
+<div id="pwd-modal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Instructor Passwords</h2>
+      <button id="pwd-modal-close" class="btn-sm">Close</button>
+    </div>
+    <ul id="inst-list" class="inst-list"></ul>
+    <div id="pwd-form" class="hidden">
+      <div class="modal-sep"></div>
+      <p id="pwd-form-label" class="pwd-form-label"></p>
+      <input type="password" id="pwd-input" class="pwd-input" placeholder="New password">
+      <div class="modal-actions">
+        <button id="pwd-save-btn" class="btn-sm primary">Save</button>
+        <button id="pwd-cancel-btn" class="btn-sm">Cancel</button>
+      </div>
+      <p id="pwd-err" class="err hidden" style="margin-top:10px"></p>
+    </div>
+  </div>
+</div>
 <script type="module">
 import * as Y from 'https://esm.sh/yjs@13.6.18';
 import { WebsocketProvider } from 'https://esm.sh/y-websocket@2.0.4';
@@ -201,7 +250,7 @@ fetch("/boats").then(r=>r.json()).then(boats=>{
 fetch("/config").then(r=>r.json()).then(c=>{CFG=c;
   RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
   LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);
-  if(c.db){HAS_DB=true;$("season-bar").classList.remove("hidden");loadSeasons();}
+  if(c.db){HAS_DB=true;$("season-bar").classList.remove("hidden");$("user-bar").classList.remove("hidden");loadSeasons();}
   _syncDrop();
 }).catch(()=>{
   RESTRICTED=new Set(CFG.restricted);DIVERSE=new Set(CFG.diverse);
@@ -631,6 +680,98 @@ $("view").addEventListener("drop",e=>{
   const tgtRow=rows.find(r=>r.day===li.dataset.day&&r.name===li.dataset.name);
   if(dragSrc.level&&tgtRow&&dragSrc.level!==tgtRow.level)return;
   swapKids(dragSrc.day,dragSrc.name,li.dataset.name);dragSrc=null;});
+// ---------------------------------------------------------------------------
+// Auth / password management
+// ---------------------------------------------------------------------------
+let _pwdTarget=null;
+
+function doLogout(){
+  fetch("/logout",{method:"POST"}).finally(()=>{window.location.href="/login";});
+}
+
+async function openPwdModal(){
+  await loadInstructors();
+  $("pwd-modal").classList.remove("hidden");
+}
+
+function closePwdModal(){
+  $("pwd-modal").classList.add("hidden");
+  $("pwd-form").classList.add("hidden");
+  $("pwd-err").classList.add("hidden");
+  $("pwd-input").value="";
+  _pwdTarget=null;
+}
+
+async function loadInstructors(){
+  const r=await fetch("/instructors");
+  const list=await r.json();
+  const ul=$("inst-list");
+  ul.innerHTML="";
+  if(!list.length){
+    ul.innerHTML='<li style="padding:10px 0;color:#8a7a62;font-size:14px">No instructors in database.</li>';
+    return;
+  }
+  list.forEach(inst=>{
+    const li=document.createElement("li");
+    li.className="inst-row";
+    const statusClass=inst.has_password?" set":"";
+    const statusText=inst.has_password?"Password set":"No password";
+    const btnLabel=inst.has_password?"Change":"Set";
+    li.innerHTML=`<span class="inst-name">${inst.name}</span>`+
+      `<span class="inst-status${statusClass}">${statusText}</span>`;
+    const btn=document.createElement("button");
+    btn.className="btn-sm";btn.textContent=btnLabel;
+    btn.addEventListener("click",()=>startSetPassword(inst.name));
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+}
+
+function startSetPassword(name){
+  _pwdTarget=name;
+  $("pwd-form-label").textContent="Set password for "+name;
+  $("pwd-err").classList.add("hidden");
+  $("pwd-input").value="";
+  $("pwd-form").classList.remove("hidden");
+  $("pwd-input").focus();
+}
+
+function cancelPwdForm(){
+  $("pwd-form").classList.add("hidden");
+  $("pwd-err").classList.add("hidden");
+  $("pwd-input").value="";
+  _pwdTarget=null;
+}
+
+async function submitPassword(){
+  const pw=$("pwd-input").value;
+  if(!pw||!_pwdTarget)return;
+  $("pwd-save-btn").disabled=true;
+  const r=await fetch("/set-password",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:_pwdTarget,password:pw}),
+  });
+  const data=await r.json();
+  $("pwd-save-btn").disabled=false;
+  if(data.ok){
+    $("pwd-form").classList.add("hidden");
+    $("pwd-input").value="";
+    await loadInstructors();
+  }else{
+    $("pwd-err").textContent=data.error||"Failed to set password.";
+    $("pwd-err").classList.remove("hidden");
+  }
+}
+
+$("manage-pwd-btn").addEventListener("click",openPwdModal);
+$("logout-btn").addEventListener("click",doLogout);
+$("pwd-modal-close").addEventListener("click",closePwdModal);
+$("pwd-save-btn").addEventListener("click",submitPassword);
+$("pwd-cancel-btn").addEventListener("click",cancelPwdForm);
+$("pwd-input").addEventListener("keydown",e=>{if(e.key==="Enter")submitPassword();});
+$("pwd-modal").addEventListener("click",e=>{if(e.target===$("pwd-modal"))closePwdModal();});
+
 $("season-pick").addEventListener("change",e=>{
   selectedSeason=e.target.value||null;
   scheduleMode=null;currentScheduleId=null;
