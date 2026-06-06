@@ -403,18 +403,20 @@ $("view").addEventListener("dragend",()=>{
   document.querySelectorAll(".dragging,.drop-target").forEach(el=>
     el.classList.remove("dragging","drop-target"));});
 $("view").addEventListener("dragover",e=>{
+  if(dragSrc)e.preventDefault();
   const li=e.target.closest("li[data-name]");
   if(!li||!dragSrc||li.dataset.day!==dragSrc.day||li.dataset.boat===dragSrc.boat)return;
-  e.preventDefault();li.classList.add("drop-target");});
+  li.classList.add("drop-target");});
 $("view").addEventListener("dragleave",e=>{
   const li=e.target.closest("li[data-name]");
   if(li)li.classList.remove("drop-target");});
 $("view").addEventListener("drop",e=>{
+  e.preventDefault();
   const li=e.target.closest("li[data-name]");
   if(!li||!dragSrc)return;
   li.classList.remove("drop-target");
   if(li.dataset.day!==dragSrc.day||li.dataset.boat===dragSrc.boat||li.dataset.name===dragSrc.name)return;
-  e.preventDefault();swapKids(dragSrc.day,dragSrc.name,li.dataset.name);dragSrc=null;});
+  swapKids(dragSrc.day,dragSrc.name,li.dataset.name);dragSrc=null;});
 $("season-pick").addEventListener("change",e=>{
   selectedSeason=e.target.value||null;
   scheduleMode=null;currentScheduleId=null;
