@@ -75,6 +75,20 @@
   footer{text-align:center;margin-top:50px;color:#8a7a62;font-size:12px;
     font-family:ui-monospace,monospace;letter-spacing:.05em}
   .hidden{display:none}
+  .season-bar{max-width:560px;margin:0 auto 20px}
+  .season-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+  .season-row label{font-weight:700;font-size:14px;white-space:nowrap}
+  .sel{font-family:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);
+    border-radius:8px;background:#fff;color:var(--ink);cursor:pointer;flex:1;min-width:0}
+  .btn-sm{border:1px solid var(--line);background:transparent;font-family:inherit;
+    font-size:13px;font-weight:600;padding:7px 13px;border-radius:8px;cursor:pointer;
+    color:var(--ink);white-space:nowrap;transition:.15s}
+  .btn-sm:hover{border-color:var(--accent2);color:var(--accent2)}
+  .btn-sm.primary{background:var(--accent2);border-color:var(--accent2);color:#fff}
+  .btn-sm.primary:hover{opacity:.88}
+  input.yr{font-family:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);
+    border-radius:8px;width:100px}
+  .season-hint{color:var(--accent);font-size:13px;font-weight:600;text-align:center;margin-top:2px}
   .err{color:var(--accent);text-align:center;font-weight:600;margin-top:14px;max-width:560px;
     margin-left:auto;margin-right:auto}
   .spin{max-width:560px;margin:0 auto;text-align:center;padding:40px 20px}
@@ -95,6 +109,19 @@
   <div class="rule"></div>
 
   <div id="loader">
+    <div id="season-bar" class="season-bar hidden">
+      <div class="season-row">
+        <label for="season-pick">Season</label>
+        <select id="season-pick" class="sel"></select>
+        <button id="new-season-btn" class="btn-sm">+ New</button>
+      </div>
+      <div id="new-season-wrap" class="season-row hidden">
+        <input id="season-year" class="yr" type="number" placeholder="Year" min="2000" max="2099">
+        <button id="create-season-btn" class="btn-sm primary">Create</button>
+        <button id="cancel-season-btn" class="btn-sm">Cancel</button>
+      </div>
+      <div id="season-hint" class="season-hint hidden">Select or create a season to enable upload.</div>
+    </div>
     <label class="drop" id="drop" for="file"><span class="anchor">&#9875;</span>
       <h2>Drop your roster CSV here</h2>
       <p>or click to choose &middot; columns: name, level &middot; the server will solve it</p>
@@ -128,16 +155,39 @@ let CFG={levels:["k","b","A","B"],restricted:["Sat","Sun","Tue","Wed"],diverse:[
 let RESTRICTED,DIVERSE,LV_RANK;
 const DAY_ORDER=["Sat","Sun","Mon","Tue","Wed","Fri"];
 let rows=[],stats=null;
+let HAS_DB=false,selectedSeason=null;
 
 fetch("/config").then(r=>r.json()).then(c=>{CFG=c;
   RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
-  LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);}).catch(()=>{
+  LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);
+  if(c.db){HAS_DB=true;$("season-bar").classList.remove("hidden");loadSeasons();}
+  _syncDrop();
+}).catch(()=>{
   RESTRICTED=new Set(CFG.restricted);DIVERSE=new Set(CFG.diverse);
   LV_RANK={};CFG.levels.forEach((l,i)=>LV_RANK[l]=i);});
 
 const $=id=>document.getElementById(id);
 const fileInput=$("file"),drop=$("drop"),err=$("err");
 
+function loadSeasons(){
+  fetch("/seasons").then(r=>r.json()).then(seasons=>{
+    const pick=$("season-pick");
+    pick.innerHTML='<option value="">— choose a season —</option>';
+    seasons.forEach(s=>{
+      const o=document.createElement("option");
+      o.value=s.id;o.textContent=s.year;pick.appendChild(o);
+    });
+    if(seasons.length===1){pick.value=seasons[0].id;selectedSeason=String(seasons[0].id);}
+    _syncDrop();
+  }).catch(()=>{});
+}
+function _syncDrop(){
+  if(!HAS_DB)return;
+  const locked=!selectedSeason;
+  drop.style.opacity=locked?"0.45":"";
+  drop.style.pointerEvents=locked?"none":"";
+  $("season-hint").classList.toggle("hidden",!locked);
+}
 function show(which){
   for(const s of ["loader","solving","app"]) $(s).classList.add("hidden");
   $(which).classList.remove("hidden");
@@ -146,7 +196,8 @@ function upload(file){
   err.classList.add("hidden");
   const fd=new FormData(); fd.append("file",file);
   show("solving"); startTimer();
-  fetch("/solve",{method:"POST",body:fd})
+  const url="/solve"+(selectedSeason?"?season_id="+selectedSeason:"");
+  fetch(url,{method:"POST",body:fd})
     .then(r=>r.json())
     .then(j=>{ if(j.error)throw new Error(j.error); poll(j.id); })
     .catch(e=>{ stopTimer(); err.textContent="&#9888; "+e.message;
@@ -279,5 +330,32 @@ $("byBoat").onclick=function(){mode="boat";this.classList.add("on");
   $("byKid").classList.remove("on");rerender();};
 $("byKid").onclick=function(){mode="kid";this.classList.add("on");
   $("byBoat").classList.remove("on");rerender();};
-$("reload").onclick=()=>{rows=[];stats=null;fileInput.value="";show("loader");};
+$("reload").onclick=()=>{
+  rows=[];stats=null;fileInput.value="";
+  if(HAS_DB){selectedSeason=null;loadSeasons();}
+  show("loader");
+};
+$("season-pick").addEventListener("change",e=>{
+  selectedSeason=e.target.value||null;_syncDrop();
+});
+$("new-season-btn").onclick=()=>{
+  $("new-season-wrap").classList.remove("hidden");$("season-year").focus();
+};
+$("cancel-season-btn").onclick=()=>{
+  $("new-season-wrap").classList.add("hidden");$("season-year").value="";
+};
+$("create-season-btn").onclick=()=>{
+  const year=parseInt($("season-year").value);
+  if(!year)return;
+  fetch("/seasons",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({year})})
+    .then(r=>r.json())
+    .then(s=>{
+      if(s.error){alert(s.error);return;}
+      $("new-season-wrap").classList.add("hidden");$("season-year").value="";
+      selectedSeason=String(s.id);
+      loadSeasons();
+      setTimeout(()=>{$("season-pick").value=s.id;_syncDrop();},30);
+    }).catch(e=>console.error("[season]",e));
+};
 </script></body></html>

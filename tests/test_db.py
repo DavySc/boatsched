@@ -5,7 +5,8 @@ input has a corresponding row in the member table with the correct level.
 """
 import pytest
 
-from boatsched.db import get_connection, add_or_update_members
+from boatsched.db import (get_connection, add_or_update_members,
+                          create_season, list_seasons, save_schedule, init_db)
 from boatsched.roster import parse_roster_bytes, roster_from_counts
 
 
@@ -132,3 +133,133 @@ class TestCsvRoundTrip:
         add_or_update_members(conn, members)
         count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
         assert count == len(members)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for season / schedule tests (need the full schema)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fconn():
+    """In-memory DB with the complete schema via init_db."""
+    return init_db(":memory:")
+
+
+# Four members re-used across TestSaveSchedule
+_MEMBERS_4 = [("Alice", "k"), ("Bob", "k"), ("Carol", "b"), ("Dave", "b")]
+_RESULT_4 = [
+    {"day": "Sat", "boat": 1, "name": "Alice", "level": "k"},
+    {"day": "Sat", "boat": 1, "name": "Bob",   "level": "k"},
+    {"day": "Sat", "boat": 2, "name": "Carol",  "level": "b"},
+    {"day": "Sat", "boat": 2, "name": "Dave",   "level": "b"},
+]
+
+
+# ---------------------------------------------------------------------------
+# create_season
+# ---------------------------------------------------------------------------
+
+class TestCreateSeason:
+    def test_returns_integer_id(self, fconn):
+        assert isinstance(create_season(fconn, 2026), int)
+
+    def test_season_in_db(self, fconn):
+        create_season(fconn, 2026)
+        row = fconn.execute("SELECT year FROM season WHERE year=2026").fetchone()
+        assert row is not None and row["year"] == 2026
+
+    def test_distinct_ids_for_different_years(self, fconn):
+        assert create_season(fconn, 2024) != create_season(fconn, 2025)
+
+    def test_duplicate_year_raises(self, fconn):
+        create_season(fconn, 2026)
+        with pytest.raises(Exception):
+            create_season(fconn, 2026)
+
+
+# ---------------------------------------------------------------------------
+# list_seasons
+# ---------------------------------------------------------------------------
+
+class TestListSeasons:
+    def test_empty_when_no_seasons(self, fconn):
+        assert list_seasons(fconn) == []
+
+    def test_returns_created_season(self, fconn):
+        create_season(fconn, 2026)
+        seasons = list_seasons(fconn)
+        assert len(seasons) == 1 and seasons[0]["year"] == 2026
+
+    def test_has_id_and_year_keys(self, fconn):
+        create_season(fconn, 2026)
+        s = list_seasons(fconn)[0]
+        assert "id" in s and "year" in s
+
+    def test_newest_first(self, fconn):
+        for y in [2023, 2025, 2024]:
+            create_season(fconn, y)
+        years = [s["year"] for s in list_seasons(fconn)]
+        assert years == sorted(years, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# save_schedule
+# ---------------------------------------------------------------------------
+
+class TestSaveSchedule:
+    def _seed(self, conn, year=2026):
+        """Add the four standard members and one season; return season_id."""
+        add_or_update_members(conn, _MEMBERS_4)
+        return create_season(conn, year)
+
+    def test_returns_integer_id(self, fconn):
+        sid = self._seed(fconn)
+        assert isinstance(save_schedule(fconn, sid, "{}", _RESULT_4), int)
+
+    def test_schedule_row_linked_to_season(self, fconn):
+        sid = self._seed(fconn)
+        schedule_id = save_schedule(fconn, sid, "{}", _RESULT_4)
+        row = fconn.execute(
+            "SELECT season_id FROM schedule WHERE id=?", (schedule_id,)
+        ).fetchone()
+        assert row is not None and row["season_id"] == sid
+
+    def test_config_json_stored(self, fconn):
+        sid = self._seed(fconn)
+        cfg = '{"boats": 2}'
+        schedule_id = save_schedule(fconn, sid, cfg, _RESULT_4)
+        row = fconn.execute(
+            "SELECT config FROM schedule WHERE id=?", (schedule_id,)
+        ).fetchone()
+        assert row["config"] == cfg
+
+    def test_boat_assignment_count(self, fconn):
+        sid = self._seed(fconn)
+        schedule_id = save_schedule(fconn, sid, "{}", _RESULT_4)
+        count = fconn.execute(
+            "SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?",
+            (schedule_id,)
+        ).fetchone()[0]
+        assert count == len(_RESULT_4)
+
+    def test_assignment_links_correct_member(self, fconn):
+        sid = self._seed(fconn)
+        schedule_id = save_schedule(fconn, sid, "{}", _RESULT_4)
+        alice_id = fconn.execute(
+            "SELECT id FROM member WHERE name='Alice'"
+        ).fetchone()["id"]
+        row = fconn.execute(
+            "SELECT boat, day FROM boat_assignment"
+            " WHERE schedule_id=? AND member_id=?",
+            (schedule_id, alice_id),
+        ).fetchone()
+        assert row is not None
+        assert row["boat"] == 1
+        assert row["day"] == "Sat"
+
+    def test_unknown_member_raises(self, fconn):
+        sid = self._seed(fconn)
+        with pytest.raises(RuntimeError, match="not found"):
+            save_schedule(fconn, sid, "{}", [
+                {"day": "Sat", "boat": 1, "name": "Nobody", "level": "k"},
+            ])

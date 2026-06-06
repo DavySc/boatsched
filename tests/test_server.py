@@ -7,6 +7,7 @@ import time
 import pytest
 
 from boatsched import Config
+from boatsched import db as _db
 from boatsched.server import _extract_multipart, make_handler
 from http.server import ThreadingHTTPServer
 
@@ -213,3 +214,144 @@ class TestGetStatus:
         _, submit = _post(srv, "/solve", ROSTER_CSV)
         data = _poll_done(srv, submit["id"])
         assert {"mixed", "distinct", "repeats", "status_C"} <= set(data["stats"])
+
+
+# ---------------------------------------------------------------------------
+# Fixture: DB-backed server
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def srv_db(tmp_path_factory):
+    db_path = str(tmp_path_factory.mktemp("db") / "boatsched.db")
+    db_conn = _db.init_db(db_path)
+    cfg = Config(boats=2, levels=["k", "b"],
+                 restricted=["Sat"], diverse=["Fri"],
+                 stage_seconds=15, seconds=15)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cfg, db_conn))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield ("127.0.0.1", port), db_conn
+    server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# /config db field
+# ---------------------------------------------------------------------------
+
+class TestConfigDbField:
+    def test_db_false_without_db(self, srv):
+        _, body = _get(srv, "/config")
+        assert json.loads(body)["db"] is False
+
+    def test_db_true_with_db(self, srv_db):
+        addr, _ = srv_db
+        _, body = _get(addr, "/config")
+        assert json.loads(body)["db"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /seasons and POST /seasons without a DB
+# ---------------------------------------------------------------------------
+
+class TestSeasonsNoDb:
+    def test_get_seasons_returns_empty_list(self, srv):
+        _, body = _get(srv, "/seasons")
+        assert json.loads(body) == []
+
+    def test_post_seasons_returns_503(self, srv):
+        status, _ = _post(srv, "/seasons", b'{"year": 2026}', "application/json")
+        assert status == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /seasons and POST /seasons with a DB
+# ---------------------------------------------------------------------------
+
+class TestSeasonsApi:
+    def test_create_returns_id_and_year(self, srv_db):
+        addr, _ = srv_db
+        status, data = _post(addr, "/seasons", b'{"year": 2040}', "application/json")
+        assert status == 200
+        assert data["year"] == 2040
+        assert isinstance(data["id"], int)
+
+    def test_created_season_appears_in_list(self, srv_db):
+        addr, _ = srv_db
+        _post(addr, "/seasons", b'{"year": 2041}', "application/json")
+        _, body = _get(addr, "/seasons")
+        years = [s["year"] for s in json.loads(body)]
+        assert 2041 in years
+
+    def test_list_newest_first(self, srv_db):
+        addr, _ = srv_db
+        for y in [b'{"year": 2043}', b'{"year": 2044}', b'{"year": 2045}']:
+            _post(addr, "/seasons", y, "application/json")
+        _, body = _get(addr, "/seasons")
+        years = [s["year"] for s in json.loads(body)]
+        assert years == sorted(years, reverse=True)
+
+    def test_duplicate_year_returns_500(self, srv_db):
+        addr, _ = srv_db
+        _post(addr, "/seasons", b'{"year": 2042}', "application/json")
+        status, _ = _post(addr, "/seasons", b'{"year": 2042}', "application/json")
+        assert status == 500
+
+    def test_bad_body_returns_400(self, srv_db):
+        addr, _ = srv_db
+        status, _ = _post(addr, "/seasons", b"not json", "application/json")
+        assert status == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /solve persists to DB
+# ---------------------------------------------------------------------------
+
+def _poll_db(db_conn, sql, args, timeout=10):
+    """Poll until the SQL query returns a row, then return it."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        row = db_conn.execute(sql, args).fetchone()
+        if row:
+            return row
+        time.sleep(0.1)
+    return None
+
+
+class TestSolveWithDb:
+    def test_schedule_row_persisted(self, srv_db):
+        addr, db_conn = srv_db
+        _, season = _post(addr, "/seasons", b'{"year": 2050}', "application/json")
+        season_id = season["id"]
+        _, submit = _post(addr, f"/solve?season_id={season_id}", ROSTER_CSV)
+        _poll_done(addr, submit["id"])
+        row = _poll_db(db_conn,
+                       "SELECT id FROM schedule WHERE season_id=?", (season_id,))
+        assert row is not None
+
+    def test_boat_assignments_persisted(self, srv_db):
+        addr, db_conn = srv_db
+        _, season = _post(addr, "/seasons", b'{"year": 2051}', "application/json")
+        season_id = season["id"]
+        _, submit = _post(addr, f"/solve?season_id={season_id}", ROSTER_CSV)
+        _poll_done(addr, submit["id"])
+        schedule_row = _poll_db(db_conn,
+                                "SELECT id FROM schedule WHERE season_id=?",
+                                (season_id,))
+        assert schedule_row is not None
+        count = db_conn.execute(
+            "SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?",
+            (schedule_row["id"],)
+        ).fetchone()[0]
+        assert count == 8  # 4 kids × 2 days
+
+    def test_schedule_config_json_is_valid(self, srv_db):
+        addr, db_conn = srv_db
+        _, season = _post(addr, "/seasons", b'{"year": 2052}', "application/json")
+        season_id = season["id"]
+        _, submit = _post(addr, f"/solve?season_id={season_id}", ROSTER_CSV)
+        _poll_done(addr, submit["id"])
+        row = _poll_db(db_conn,
+                       "SELECT config FROM schedule WHERE season_id=?", (season_id,))
+        assert row is not None
+        cfg = json.loads(row["config"])
+        assert "boats" in cfg

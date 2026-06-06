@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib.resources as resources
 import json
+import sys
 import threading
 import traceback
 import uuid
@@ -30,13 +31,20 @@ def _viewer_html() -> str:
         encoding="utf-8")
 
 
-def _run_job(job_id: str, kids, cfg: Config) -> None:
+def _run_job(job_id: str, kids, cfg: Config,
+             db_conn=None, season_id=None) -> None:
     try:
         rows, stats = solve(kids, cfg)
         result = [{"day": d, "boat": b, "name": n, "level": l}
                   for (d, b, n, l) in rows]
         with JOBS_LOCK:
             JOBS[job_id].update(status="done", result=result, stats=stats)
+        if db_conn is not None and season_id is not None:
+            try:
+                _db.save_schedule(db_conn, int(season_id),
+                                  json.dumps(asdict(cfg)), result)
+            except Exception as exc:
+                print(f"[db] save_schedule failed: {exc}", file=sys.stderr)
     except BaseException as e:   # catch SystemExit too, so no silent hangs
         with JOBS_LOCK:
             JOBS[job_id].update(status="error",
@@ -79,7 +87,11 @@ def make_handler(cfg: Config, db_conn=None):
                 self._send(200, {"boats": cfg.boats,
                                  "levels": list(cfg.levels),
                                  "restricted": list(cfg.restricted),
-                                 "diverse": list(cfg.diverse)})
+                                 "diverse": list(cfg.diverse),
+                                 "db": db_conn is not None})
+            elif path == "/seasons":
+                seasons = _db.list_seasons(db_conn) if db_conn is not None else []
+                self._send(200, seasons)
             elif path == "/status":
                 q = parse_qs(urlparse(self.path).query)
                 jid = (q.get("id") or [""])[0]
@@ -97,8 +109,26 @@ def make_handler(cfg: Config, db_conn=None):
                 self._send(404, {"error": "not found"})
 
         def do_POST(self):
-            if urlparse(self.path).path != "/solve":
+            path = urlparse(self.path).path
+            if path == "/seasons":
+                if db_conn is None:
+                    self._send(503, {"error": "no database configured"}); return
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    body = json.loads(self.rfile.read(length))
+                    year = int(body["year"])
+                except (ValueError, KeyError, json.JSONDecodeError) as e:
+                    self._send(400, {"error": str(e)}); return
+                try:
+                    sid = _db.create_season(db_conn, year)
+                    self._send(200, {"id": sid, "year": year})
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
+                return
+            if path != "/solve":
                 self._send(404, {"error": "not found"}); return
+            q = parse_qs(urlparse(self.path).query)
+            season_id = (q.get("season_id") or [None])[0]
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length)
             ctype = self.headers.get("Content-Type", "")
@@ -117,7 +147,8 @@ def make_handler(cfg: Config, db_conn=None):
             with JOBS_LOCK:
                 JOBS[jid] = dict(status="running", result=None,
                                  error=None, stats=None)
-            threading.Thread(target=_run_job, args=(jid, kids, cfg),
+            threading.Thread(target=_run_job,
+                             args=(jid, kids, cfg, db_conn, season_id),
                              daemon=True).start()
             self._send(200, {"id": jid})
 

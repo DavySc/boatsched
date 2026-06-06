@@ -39,6 +39,41 @@ def add_or_update_members(conn: sqlite3.Connection, members: list) -> None:
             )
 
 
+def create_season(conn: sqlite3.Connection, year: int) -> int:
+    cur = conn.execute("INSERT INTO season (year) VALUES (?)", (year,))
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_seasons(conn: sqlite3.Connection) -> list:
+    return [dict(row) for row in
+            conn.execute("SELECT id, year FROM season ORDER BY year DESC")]
+
+
+def save_schedule(conn: sqlite3.Connection, season_id: int,
+                  config_json: str, result: list) -> int:
+    cur = conn.execute(
+        "INSERT INTO schedule (season_id, config) VALUES (?, ?)",
+        (season_id, config_json),
+    )
+    schedule_id = cur.lastrowid
+    assignments = []
+    for row in result:
+        member = conn.execute(
+            "SELECT id FROM member WHERE name = ?", (row["name"],)
+        ).fetchone()
+        if member is None:
+            raise RuntimeError(f"member '{row['name']}' not found in DB")
+        assignments.append((schedule_id, member["id"], row["day"], row["boat"]))
+    conn.executemany(
+        "INSERT INTO boat_assignment (schedule_id, member_id, day, boat)"
+        " VALUES (?, ?, ?, ?)",
+        assignments,
+    )
+    conn.commit()
+    return schedule_id
+
+
 def _create_tables(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS member (
