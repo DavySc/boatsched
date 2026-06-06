@@ -74,6 +74,47 @@ def save_schedule(conn: sqlite3.Connection, season_id: int,
     return schedule_id
 
 
+def list_schedules(conn: sqlite3.Connection, season_id: int) -> list:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, created FROM schedule WHERE season_id=? ORDER BY created DESC",
+        (season_id,),
+    )]
+
+
+def get_schedule(conn: sqlite3.Connection, schedule_id: int) -> list:
+    rows = conn.execute(
+        "SELECT ba.day, ba.boat, m.name, m.level"
+        " FROM boat_assignment ba"
+        " JOIN member m ON m.id = ba.member_id"
+        " WHERE ba.schedule_id = ?"
+        " ORDER BY ba.day, ba.boat, m.name",
+        (schedule_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def swap_assignment(conn: sqlite3.Connection, schedule_id: int,
+                    day: str, name_a: str, name_b: str) -> None:
+    def _row(name):
+        return conn.execute(
+            "SELECT ba.id, ba.boat FROM boat_assignment ba"
+            " JOIN member m ON m.id = ba.member_id"
+            " WHERE ba.schedule_id=? AND ba.day=? AND m.name=?",
+            (schedule_id, day, name),
+        ).fetchone()
+
+    row_a, row_b = _row(name_a), _row(name_b)
+    if row_a is None or row_b is None:
+        raise RuntimeError("member not found in schedule for that day")
+    if row_a["boat"] == row_b["boat"]:
+        return
+    conn.execute("UPDATE boat_assignment SET boat=? WHERE id=?",
+                 (row_b["boat"], row_a["id"]))
+    conn.execute("UPDATE boat_assignment SET boat=? WHERE id=?",
+                 (row_a["boat"], row_b["id"]))
+    conn.commit()
+
+
 def _create_tables(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS member (

@@ -89,6 +89,9 @@
   input.yr{font-family:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);
     border-radius:8px;width:100px}
   .season-hint{color:var(--accent);font-size:13px;font-weight:600;text-align:center;margin-top:2px}
+  .crew li[draggable=true]{cursor:grab;user-select:none}
+  .crew li.dragging{opacity:.35}
+  .crew li.drop-target{outline:2px dashed var(--accent2);border-radius:6px;background:rgba(31,122,140,.09)}
   .err{color:var(--accent);text-align:center;font-weight:600;margin-top:14px;max-width:560px;
     margin-left:auto;margin-right:auto}
   .spin{max-width:560px;margin:0 auto;text-align:center;padding:40px 20px}
@@ -121,6 +124,13 @@
         <button id="cancel-season-btn" class="btn-sm">Cancel</button>
       </div>
       <div id="season-hint" class="season-hint hidden">Select or create a season to enable upload.</div>
+    </div>
+    <div id="schedule-bar" class="season-bar hidden">
+      <div class="season-row">
+        <label for="schedule-pick">Schedule</label>
+        <select id="schedule-pick" class="sel"></select>
+      </div>
+      <div id="schedule-hint" class="season-hint hidden">Pick a schedule above or choose &ldquo;Upload new roster&rdquo;.</div>
     </div>
     <label class="drop" id="drop" for="file"><span class="anchor">&#9875;</span>
       <h2>Drop your roster CSV here</h2>
@@ -155,7 +165,7 @@ let CFG={levels:["k","b","A","B"],restricted:["Sat","Sun","Tue","Wed"],diverse:[
 let RESTRICTED,DIVERSE,LV_RANK;
 const DAY_ORDER=["Fri","Sat","Sun","Mon","Tue","Wed"];
 let rows=[],stats=null;
-let HAS_DB=false,selectedSeason=null;
+let HAS_DB=false,selectedSeason=null,scheduleMode=null,currentScheduleId=null;
 
 fetch("/config").then(r=>r.json()).then(c=>{CFG=c;
   RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
@@ -177,16 +187,43 @@ function loadSeasons(){
       const o=document.createElement("option");
       o.value=s.id;o.textContent=s.year;pick.appendChild(o);
     });
-    if(seasons.length===1){pick.value=seasons[0].id;selectedSeason=String(seasons[0].id);}
+    if(seasons.length===1){
+      pick.value=seasons[0].id;selectedSeason=String(seasons[0].id);
+      loadSchedules(seasons[0].id);
+    }
     _syncDrop();
   }).catch(()=>{});
 }
+function loadSchedules(sid){
+  fetch("/schedules?season_id="+sid).then(r=>r.json()).then(scheds=>{
+    const pick=$("schedule-pick");
+    pick.innerHTML='<option value="">— select —</option><option value="new">+ Upload new roster</option>';
+    scheds.forEach(s=>{
+      const o=document.createElement("option");
+      o.value=s.id;o.textContent=(s.created||"").slice(0,16);pick.appendChild(o);
+    });
+    _syncDrop();
+  }).catch(()=>{});
+}
+function fetchSchedule(id){
+  show("solving");startTimer();
+  fetch("/schedule?id="+id).then(r=>r.json()).then(data=>{
+    stopTimer();
+    if(data.error)throw new Error(data.error);
+    rows=data.rows;stats=null;currentScheduleId=id;showApp();
+  }).catch(e=>{stopTimer();err.textContent="⚠ "+e.message;
+    err.classList.remove("hidden");show("loader");});
+}
 function _syncDrop(){
   if(!HAS_DB)return;
-  const locked=!selectedSeason;
+  const seasonOk=!!selectedSeason;
+  const schedOk=scheduleMode==="new";
+  const locked=!seasonOk||!schedOk;
   drop.style.opacity=locked?"0.45":"";
   drop.style.pointerEvents=locked?"none":"";
-  $("season-hint").classList.toggle("hidden",!locked);
+  $("season-hint").classList.toggle("hidden",seasonOk);
+  $("schedule-bar").classList.toggle("hidden",!seasonOk);
+  $("schedule-hint").classList.toggle("hidden",!seasonOk||schedOk);
 }
 function show(which){
   for(const s of ["loader","solving","app"]) $(s).classList.add("hidden");
@@ -213,7 +250,10 @@ function poll(id){
     stopTimer();
     if(j.status==="error"){ err.textContent="&#9888; "+j.error;
       err.classList.remove("hidden"); show("loader"); return; }
-    rows=j.result; stats=j.stats; showApp();
+    rows=j.result;stats=j.stats;
+    if(j.schedule_id!=null){currentScheduleId=j.schedule_id;
+      if(HAS_DB&&selectedSeason)loadSchedules(selectedSeason);}
+    showApp();
   }).catch(e=>{stopTimer();err.textContent="&#9888; "+e.message;
     err.classList.remove("hidden");show("loader");});
 }
@@ -242,6 +282,18 @@ function renderLegend(){
     h+=`<span><i class="dot ${lvClass(l)}"></i>${names[l]||("Level "+l)}</span>`;
   h+=`<span><i class="dot" style="background:var(--mix)"></i>Mixed boat</span>`;
   $("legend").innerHTML=h;
+}
+
+function swapKids(day,nameA,nameB){
+  fetch("/swap",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({schedule_id:currentScheduleId,day,name_a:nameA,name_b:nameB})
+  }).then(r=>r.json()).then(d=>{
+    if(d.error){alert("Swap failed: "+d.error);return;}
+    const ra=rows.find(r=>r.day===day&&r.name===nameA);
+    const rb=rows.find(r=>r.day===day&&r.name===nameB);
+    if(ra&&rb){const t=ra.boat;ra.boat=rb.boat;rb.boat=t;}
+    renderByBoat();
+  }).catch(e=>alert("Swap failed: "+e.message));
 }
 
 // sort a boat's crew by level rank (low->high), then name
@@ -273,11 +325,12 @@ function renderByBoat(){
       const levels=[...new Set(sorted.map(c=>c.level))];
       const mixed=levels.length>1; if(mixed)mixedCount++;
       const tag=mixed?`${levels.length} levels`:levels[0];
+      const drag=!!currentScheduleId;
       cards+=`<div class="boat ${mixed?'mixed':''}">
         <div class="boat-top"><span class="boat-num">Boat ${bo}</span>
           <span class="boat-tag">${tag}</span></div>
         <ul class="crew">${sorted.map(c=>
-          `<li><span class="lv ${lvClass(c.level)}">${c.level}</span>${c.name}</li>`
+          `<li draggable="${drag}" data-day="${day}" data-name="${c.name.replace(/"/g,'&quot;')}" data-boat="${bo}"><span class="lv ${lvClass(c.level)}">${c.level}</span>${c.name}</li>`
         ).join("")}</ul></div>`;
     }
     const meta=RESTRICTED.has(day)?`${mixedCount} mixed boat${mixedCount!==1?'s':''}`
@@ -332,11 +385,48 @@ $("byKid").onclick=function(){mode="kid";this.classList.add("on");
   $("byBoat").classList.remove("on");rerender();};
 $("reload").onclick=()=>{
   rows=[];stats=null;fileInput.value="";
-  if(HAS_DB){selectedSeason=null;loadSeasons();}
+  currentScheduleId=null;scheduleMode=null;
+  if(HAS_DB){
+    selectedSeason=null;
+    $("schedule-bar").classList.add("hidden");
+    $("schedule-pick").innerHTML="";
+    loadSeasons();
+  }
   show("loader");
 };
+let dragSrc=null;
+$("view").addEventListener("dragstart",e=>{
+  const li=e.target.closest("li[data-name]");if(!li){dragSrc=null;return;}
+  dragSrc={day:li.dataset.day,name:li.dataset.name,boat:li.dataset.boat};
+  li.classList.add("dragging");e.dataTransfer.effectAllowed="move";});
+$("view").addEventListener("dragend",()=>{
+  document.querySelectorAll(".dragging,.drop-target").forEach(el=>
+    el.classList.remove("dragging","drop-target"));});
+$("view").addEventListener("dragover",e=>{
+  const li=e.target.closest("li[data-name]");
+  if(!li||!dragSrc||li.dataset.day!==dragSrc.day||li.dataset.boat===dragSrc.boat)return;
+  e.preventDefault();li.classList.add("drop-target");});
+$("view").addEventListener("dragleave",e=>{
+  const li=e.target.closest("li[data-name]");
+  if(li)li.classList.remove("drop-target");});
+$("view").addEventListener("drop",e=>{
+  const li=e.target.closest("li[data-name]");
+  if(!li||!dragSrc)return;
+  li.classList.remove("drop-target");
+  if(li.dataset.day!==dragSrc.day||li.dataset.boat===dragSrc.boat||li.dataset.name===dragSrc.name)return;
+  e.preventDefault();swapKids(dragSrc.day,dragSrc.name,li.dataset.name);dragSrc=null;});
 $("season-pick").addEventListener("change",e=>{
-  selectedSeason=e.target.value||null;_syncDrop();
+  selectedSeason=e.target.value||null;
+  scheduleMode=null;currentScheduleId=null;
+  $("schedule-pick").innerHTML="";
+  if(selectedSeason)loadSchedules(selectedSeason);
+  _syncDrop();
+});
+$("schedule-pick").addEventListener("change",e=>{
+  const v=e.target.value;
+  if(!v){scheduleMode=null;currentScheduleId=null;_syncDrop();}
+  else if(v==="new"){scheduleMode="new";currentScheduleId=null;_syncDrop();}
+  else{scheduleMode=Number(v);fetchSchedule(Number(v));}
 });
 $("new-season-btn").onclick=()=>{
   $("new-season-wrap").classList.remove("hidden");$("season-year").focus();
@@ -353,9 +443,9 @@ $("create-season-btn").onclick=()=>{
     .then(s=>{
       if(s.error){alert(s.error);return;}
       $("new-season-wrap").classList.add("hidden");$("season-year").value="";
-      selectedSeason=String(s.id);
+      selectedSeason=String(s.id);scheduleMode=null;currentScheduleId=null;
       loadSeasons();
-      setTimeout(()=>{$("season-pick").value=s.id;_syncDrop();},30);
+      setTimeout(()=>{$("season-pick").value=s.id;loadSchedules(s.id);_syncDrop();},30);
     }).catch(e=>console.error("[season]",e));
 };
 </script></body></html>

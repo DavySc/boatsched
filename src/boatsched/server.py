@@ -37,14 +37,16 @@ def _run_job(job_id: str, kids, cfg: Config,
         rows, stats = solve(kids, cfg)
         result = [{"day": d, "boat": b, "name": n, "level": l}
                   for (d, b, n, l) in rows]
-        with JOBS_LOCK:
-            JOBS[job_id].update(status="done", result=result, stats=stats)
+        schedule_id = None
         if db_conn is not None and season_id is not None:
             try:
-                _db.save_schedule(db_conn, int(season_id),
-                                  json.dumps(asdict(cfg)), result)
+                schedule_id = _db.save_schedule(
+                    db_conn, int(season_id), json.dumps(asdict(cfg)), result)
             except Exception as exc:
                 print(f"[db] save_schedule failed: {exc}", file=sys.stderr)
+        with JOBS_LOCK:
+            JOBS[job_id].update(status="done", result=result, stats=stats,
+                                schedule_id=schedule_id)
     except BaseException as e:   # catch SystemExit too, so no silent hangs
         with JOBS_LOCK:
             JOBS[job_id].update(status="error",
@@ -92,6 +94,26 @@ def make_handler(cfg: Config, db_conn=None):
             elif path == "/seasons":
                 seasons = _db.list_seasons(db_conn) if db_conn is not None else []
                 self._send(200, seasons)
+            elif path == "/schedules":
+                q = parse_qs(urlparse(self.path).query)
+                sid = (q.get("season_id") or [None])[0]
+                if db_conn is None or sid is None:
+                    self._send(200, []); return
+                try:
+                    self._send(200, _db.list_schedules(db_conn, int(sid)))
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
+            elif path == "/schedule":
+                if db_conn is None:
+                    self._send(503, {"error": "no database"}); return
+                q = parse_qs(urlparse(self.path).query)
+                sid = (q.get("id") or [None])[0]
+                if sid is None:
+                    self._send(400, {"error": "missing id"}); return
+                try:
+                    self._send(200, {"rows": _db.get_schedule(db_conn, int(sid))})
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
             elif path == "/status":
                 q = parse_qs(urlparse(self.path).query)
                 jid = (q.get("id") or [""])[0]
@@ -102,6 +124,8 @@ def make_handler(cfg: Config, db_conn=None):
                 out = {"status": job["status"]}
                 if job["status"] == "done":
                     out["result"] = job["result"]; out["stats"] = job["stats"]
+                    if job.get("schedule_id") is not None:
+                        out["schedule_id"] = job["schedule_id"]
                 elif job["status"] == "error":
                     out["error"] = job["error"]
                 self._send(200, out)
@@ -110,6 +134,24 @@ def make_handler(cfg: Config, db_conn=None):
 
         def do_POST(self):
             path = urlparse(self.path).path
+            if path == "/swap":
+                if db_conn is None:
+                    self._send(503, {"error": "no database"}); return
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    body = json.loads(self.rfile.read(length))
+                    schedule_id = int(body["schedule_id"])
+                    day = str(body["day"])
+                    name_a = str(body["name_a"])
+                    name_b = str(body["name_b"])
+                except (ValueError, KeyError, json.JSONDecodeError) as e:
+                    self._send(400, {"error": str(e)}); return
+                try:
+                    _db.swap_assignment(db_conn, schedule_id, day, name_a, name_b)
+                    self._send(200, {"ok": True})
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
+                return
             if path == "/seasons":
                 if db_conn is None:
                     self._send(503, {"error": "no database configured"}); return
