@@ -229,6 +229,14 @@
       </div>
       <p id="pwd-err" class="err hidden" style="margin-top:10px"></p>
     </div>
+    <div class="modal-sep"></div>
+    <p class="pwd-form-label">Add new instructor</p>
+    <input type="text" id="new-inst-name" class="pwd-input" placeholder="Name">
+    <input type="password" id="new-inst-pw" class="pwd-input" placeholder="Password" style="margin-top:8px">
+    <div class="modal-actions" style="margin-top:12px">
+      <button id="add-inst-btn" class="btn-sm primary">Add instructor</button>
+    </div>
+    <p id="add-inst-err" class="err hidden" style="margin-top:10px"></p>
   </div>
 </div>
 <script type="module">
@@ -764,12 +772,38 @@ async function submitPassword(){
   }
 }
 
+async function addInstructor(){
+  const name=$("new-inst-name").value.trim();
+  const pw=$("new-inst-pw").value;
+  $("add-inst-err").classList.add("hidden");
+  if(!name||!pw){
+    $("add-inst-err").textContent="Name and password are required.";
+    $("add-inst-err").classList.remove("hidden");return;
+  }
+  $("add-inst-btn").disabled=true;
+  const r=await fetch("/instructor",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name,password:pw}),
+  });
+  const data=await r.json();
+  $("add-inst-btn").disabled=false;
+  if(data.ok){
+    $("new-inst-name").value="";$("new-inst-pw").value="";
+    await loadInstructors();
+  }else{
+    $("add-inst-err").textContent=data.error||"Failed to add instructor.";
+    $("add-inst-err").classList.remove("hidden");
+  }
+}
+
 $("manage-pwd-btn").addEventListener("click",openPwdModal);
 $("logout-btn").addEventListener("click",doLogout);
 $("pwd-modal-close").addEventListener("click",closePwdModal);
 $("pwd-save-btn").addEventListener("click",submitPassword);
 $("pwd-cancel-btn").addEventListener("click",cancelPwdForm);
 $("pwd-input").addEventListener("keydown",e=>{if(e.key==="Enter")submitPassword();});
+$("add-inst-btn").addEventListener("click",addInstructor);
+$("new-inst-pw").addEventListener("keydown",e=>{if(e.key==="Enter")addInstructor();});
 $("pwd-modal").addEventListener("click",e=>{if(e.target===$("pwd-modal"))closePwdModal();});
 
 $("season-pick").addEventListener("change",e=>{

@@ -449,6 +449,43 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             return []
         return await asyncio.to_thread(_db.list_instructors, db_conn)
 
+    @app.post("/instructor")
+    async def create_instructor(request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        try:
+            body = await request.json()
+            name = str(body["name"]).strip()
+            password = str(body["password"])
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if not name or not password:
+            return JSONResponse({"error": "name and password are required"}, status_code=400)
+
+        def _create():
+            row = db_conn.execute(
+                "SELECT id FROM member WHERE name=?", (name,)
+            ).fetchone()
+            member_id = row["id"] if row else db_conn.execute(
+                "INSERT INTO member (name, level) VALUES (?, NULL)", (name,)
+            ).lastrowid
+            already = db_conn.execute(
+                "SELECT 1 FROM instructor WHERE member_id=?", (member_id,)
+            ).fetchone()
+            if already:
+                return None
+            db_conn.execute(
+                "INSERT INTO instructor (member_id) VALUES (?)", (member_id,)
+            )
+            db_conn.commit()
+            return member_id
+
+        member_id = await asyncio.to_thread(_create)
+        if member_id is None:
+            return JSONResponse({"error": "already an instructor"}, status_code=409)
+        await asyncio.to_thread(_db.set_instructor_password, db_conn, member_id, password)
+        return {"ok": True}
+
     @app.post("/set-password")
     async def set_password(request: Request):
         if db_conn is None:

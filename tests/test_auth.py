@@ -208,6 +208,61 @@ class TestMeEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# POST /instructor — create new instructor
+# ---------------------------------------------------------------------------
+
+class TestCreateInstructor:
+    def test_create_instructor_in_open_mode(self, open_client):
+        client, db_conn = open_client
+        r = client.post("/instructor", json={"name": "NewGuy", "password": "pw1"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert _db.verify_instructor_login(db_conn, "NewGuy", "pw1") is not None
+
+    def test_create_instructor_requires_auth_in_auth_mode(self, auth_client):
+        client, _ = auth_client
+        r = client.post("/instructor", json={"name": "NewGuy", "password": "pw1"})
+        assert r.status_code == 401
+
+    def test_create_instructor_authenticated(self, auth_client):
+        client, db_conn = auth_client
+        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        r = client.post("/instructor", json={"name": "Bob", "password": "bobpw"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert _db.verify_instructor_login(db_conn, "Bob", "bobpw") is not None
+
+    def test_create_instructor_promotes_existing_member(self, auth_client):
+        client, db_conn = auth_client
+        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        # Add a regular member first
+        _db.add_or_update_members(db_conn, [("Carol", "k")])
+        r = client.post("/instructor", json={"name": "Carol", "password": "carolpw"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+    def test_create_duplicate_instructor_returns_409(self, auth_client):
+        client, _ = auth_client
+        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        r = client.post("/instructor", json={"name": "Alice", "password": "newpw"})
+        assert r.status_code == 409
+
+    def test_create_instructor_empty_fields_returns_400(self, auth_client):
+        client, _ = auth_client
+        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        r = client.post("/instructor", json={"name": "", "password": ""})
+        assert r.status_code == 400
+
+    def test_new_instructor_appears_in_list(self, auth_client):
+        client, _ = auth_client
+        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        client.post("/instructor", json={"name": "Dave", "password": "davepw"})
+        instructors = client.get("/instructors").json()
+        names = [i["name"] for i in instructors]
+        assert "Dave" in names
+
+
+# ---------------------------------------------------------------------------
 # /instructors endpoint
 # ---------------------------------------------------------------------------
 
