@@ -7,7 +7,8 @@ import pytest
 
 from boatsched.db import (get_connection, add_or_update_members,
                           create_season, list_seasons, save_schedule, init_db,
-                          list_schedules, get_schedule, swap_assignment)
+                          list_schedules, get_schedule, swap_assignment,
+                          list_boats, rename_boat)
 from boatsched.roster import parse_roster_bytes, roster_from_counts
 
 
@@ -250,7 +251,7 @@ class TestSaveSchedule:
             "SELECT id FROM member WHERE name='Alice'"
         ).fetchone()["id"]
         row = fconn.execute(
-            "SELECT boat, day FROM boat_assignment"
+            "SELECT boat_id AS boat, day FROM boat_assignment"
             " WHERE schedule_id=? AND member_id=?",
             (schedule_id, alice_id),
         ).fetchone()
@@ -345,11 +346,11 @@ class TestSwapAssignment:
 
     def _boat_of(self, conn, schedule_id, name, day="Sat"):
         return conn.execute(
-            "SELECT ba.boat FROM boat_assignment ba"
+            "SELECT ba.boat_id FROM boat_assignment ba"
             " JOIN member m ON m.id = ba.member_id"
             " WHERE ba.schedule_id=? AND ba.day=? AND m.name=?",
             (schedule_id, day, name),
-        ).fetchone()["boat"]
+        ).fetchone()["boat_id"]
 
     def test_swap_exchanges_boats(self, fconn):
         sid = self._seed(fconn)
@@ -387,3 +388,42 @@ class TestSwapAssignment:
             "SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?", (sid,)
         ).fetchone()[0]
         assert before == after
+
+
+# ---------------------------------------------------------------------------
+# list_boats / rename_boat
+# ---------------------------------------------------------------------------
+
+class TestBoats:
+    def test_thirteen_boats_seeded(self, fconn):
+        boats = list_boats(fconn)
+        assert len(boats) == 13
+
+    def test_boat_ids_are_one_to_thirteen(self, fconn):
+        ids = [b["id"] for b in list_boats(fconn)]
+        assert ids == list(range(1, 14))
+
+    def test_boats_have_no_name_by_default(self, fconn):
+        assert all(b["name"] is None for b in list_boats(fconn))
+
+    def test_rename_sets_name(self, fconn):
+        rename_boat(fconn, 1, "Blue Jay")
+        boat = next(b for b in list_boats(fconn) if b["id"] == 1)
+        assert boat["name"] == "Blue Jay"
+
+    def test_rename_to_none_clears_name(self, fconn):
+        rename_boat(fconn, 1, "Blue Jay")
+        rename_boat(fconn, 1, None)
+        boat = next(b for b in list_boats(fconn) if b["id"] == 1)
+        assert boat["name"] is None
+
+    def test_rename_empty_string_clears_name(self, fconn):
+        rename_boat(fconn, 1, "Blue Jay")
+        rename_boat(fconn, 1, "")
+        boat = next(b for b in list_boats(fconn) if b["id"] == 1)
+        assert boat["name"] is None
+
+    def test_rename_only_affects_target_boat(self, fconn):
+        rename_boat(fconn, 3, "Sunfish")
+        others = [b for b in list_boats(fconn) if b["id"] != 3]
+        assert all(b["name"] is None for b in others)

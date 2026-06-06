@@ -64,9 +64,9 @@ def save_schedule(conn: sqlite3.Connection, season_id: int,
         ).fetchone()
         if member is None:
             raise RuntimeError(f"member '{row['name']}' not found in DB")
-        assignments.append((schedule_id, member["id"], row["day"], row["boat"]))
+        assignments.append((schedule_id, member["id"], row["boat"], row["day"]))
     conn.executemany(
-        "INSERT INTO boat_assignment (schedule_id, member_id, day, boat)"
+        "INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day)"
         " VALUES (?, ?, ?, ?)",
         assignments,
     )
@@ -83,11 +83,11 @@ def list_schedules(conn: sqlite3.Connection, season_id: int) -> list:
 
 def get_schedule(conn: sqlite3.Connection, schedule_id: int) -> list:
     rows = conn.execute(
-        "SELECT ba.day, ba.boat, m.name, m.level"
+        "SELECT ba.day, ba.boat_id AS boat, m.name, m.level"
         " FROM boat_assignment ba"
         " JOIN member m ON m.id = ba.member_id"
         " WHERE ba.schedule_id = ?"
-        " ORDER BY ba.day, ba.boat, m.name",
+        " ORDER BY ba.day, ba.boat_id, m.name",
         (schedule_id,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -97,7 +97,7 @@ def swap_assignment(conn: sqlite3.Connection, schedule_id: int,
                     day: str, name_a: str, name_b: str) -> None:
     def _row(name):
         return conn.execute(
-            "SELECT ba.id, ba.boat FROM boat_assignment ba"
+            "SELECT ba.id, ba.boat_id FROM boat_assignment ba"
             " JOIN member m ON m.id = ba.member_id"
             " WHERE ba.schedule_id=? AND ba.day=? AND m.name=?",
             (schedule_id, day, name),
@@ -106,12 +106,23 @@ def swap_assignment(conn: sqlite3.Connection, schedule_id: int,
     row_a, row_b = _row(name_a), _row(name_b)
     if row_a is None or row_b is None:
         raise RuntimeError("member not found in schedule for that day")
-    if row_a["boat"] == row_b["boat"]:
+    if row_a["boat_id"] == row_b["boat_id"]:
         return
-    conn.execute("UPDATE boat_assignment SET boat=? WHERE id=?",
-                 (row_b["boat"], row_a["id"]))
-    conn.execute("UPDATE boat_assignment SET boat=? WHERE id=?",
-                 (row_a["boat"], row_b["id"]))
+    conn.execute("UPDATE boat_assignment SET boat_id=? WHERE id=?",
+                 (row_b["boat_id"], row_a["id"]))
+    conn.execute("UPDATE boat_assignment SET boat_id=? WHERE id=?",
+                 (row_a["boat_id"], row_b["id"]))
+    conn.commit()
+
+
+def list_boats(conn: sqlite3.Connection) -> list:
+    return [dict(r) for r in conn.execute(
+        "SELECT boat_id AS id, name FROM boat ORDER BY boat_id"
+    )]
+
+
+def rename_boat(conn: sqlite3.Connection, boat_id: int, name) -> None:
+    conn.execute("UPDATE boat SET name=? WHERE boat_id=?", (name or None, boat_id))
     conn.commit()
 
 
@@ -127,7 +138,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS instructor (
             member_id     INTEGER NOT NULL UNIQUE REFERENCES member(id),
-            instructor_id            INTEGER PRIMARY KEY
+            instructor_id INTEGER PRIMARY KEY
         );
 
         CREATE TABLE IF NOT EXISTS season (
@@ -142,16 +153,27 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             config    TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS boat (
+            boat_id INTEGER PRIMARY KEY,
+            name    TEXT,
+            notes   TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS boat_assignment (
             id          INTEGER PRIMARY KEY,
             schedule_id INTEGER NOT NULL REFERENCES schedule(id),
             member_id   INTEGER NOT NULL REFERENCES member(id),
-            day         TEXT NOT NULL,
-            boat        INTEGER NOT NULL
+            boat_id     INTEGER NOT NULL REFERENCES boat(boat_id),
+            day         TEXT NOT NULL
         );
 
-        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_member_per_boat_assignment on boat_assignment(schedule_id,member_id,day);
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_member_per_boat_assignment
+            ON boat_assignment(schedule_id, member_id, day);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_name on member(name);
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_name ON member(name);
     """)
+    conn.executemany(
+        "INSERT OR IGNORE INTO boat (boat_id) VALUES (?)",
+        [(i,) for i in range(1, 14)],
+    )
     conn.commit()

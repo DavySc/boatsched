@@ -94,6 +94,9 @@ def make_handler(cfg: Config, db_conn=None):
             elif path == "/seasons":
                 seasons = _db.list_seasons(db_conn) if db_conn is not None else []
                 self._send(200, seasons)
+            elif path == "/boats":
+                boats = _db.list_boats(db_conn) if db_conn is not None else []
+                self._send(200, boats)
             elif path == "/schedules":
                 q = parse_qs(urlparse(self.path).query)
                 sid = (q.get("season_id") or [None])[0]
@@ -134,6 +137,22 @@ def make_handler(cfg: Config, db_conn=None):
 
         def do_POST(self):
             path = urlparse(self.path).path
+            if path == "/boat":
+                if db_conn is None:
+                    self._send(503, {"error": "no database"}); return
+                length = int(self.headers.get("Content-Length", 0))
+                try:
+                    body = json.loads(self.rfile.read(length))
+                    boat_id = int(body["id"])
+                    name = body.get("name") or None
+                except (ValueError, KeyError, json.JSONDecodeError) as e:
+                    self._send(400, {"error": str(e)}); return
+                try:
+                    _db.rename_boat(db_conn, boat_id, name)
+                    self._send(200, {"ok": True})
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
+                return
             if path == "/swap":
                 if db_conn is None:
                     self._send(503, {"error": "no database"}); return

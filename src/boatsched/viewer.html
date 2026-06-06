@@ -92,6 +92,10 @@
   .crew li[draggable=true]{cursor:grab;user-select:none}
   .crew li.dragging{opacity:.35}
   .crew li.drop-target{outline:2px dashed var(--accent2);border-radius:6px;background:rgba(31,122,140,.09)}
+  .boat-num[data-boat-id]{cursor:pointer}
+  .boat-num[data-boat-id]:hover{color:var(--accent2)}
+  .boat-name-input{border:none;background:transparent;font-weight:800;font-size:15px;
+    font-family:inherit;color:var(--ink);outline:none;width:120px;padding:0;min-width:0}
   .err{color:var(--accent);text-align:center;font-weight:600;margin-top:14px;max-width:560px;
     margin-left:auto;margin-right:auto}
   .spin{max-width:560px;margin:0 auto;text-align:center;padding:40px 20px}
@@ -166,7 +170,10 @@ let RESTRICTED,DIVERSE,LV_RANK;
 const DAY_ORDER=["Fri","Sat","Sun","Mon","Tue","Wed"];
 let rows=[],stats=null;
 let HAS_DB=false,selectedSeason=null,scheduleMode=null,currentScheduleId=null;
+let BOATS={};
 
+fetch("/boats").then(r=>r.json()).then(boats=>{
+  boats.forEach(b=>{BOATS[b.id]=b.name||null;});}).catch(()=>{});
 fetch("/config").then(r=>r.json()).then(c=>{CFG=c;
   RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
   LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);
@@ -292,8 +299,34 @@ function swapKids(day,nameA,nameB){
     const ra=rows.find(r=>r.day===day&&r.name===nameA);
     const rb=rows.find(r=>r.day===day&&r.name===nameB);
     if(ra&&rb){const t=ra.boat;ra.boat=rb.boat;rb.boat=t;}
-    renderByBoat();
+    const old=document.querySelector(`section.day[data-day="${CSS.escape(day)}"]`);
+    if(old)old.replaceWith(_daySectionEl(day,false));
   }).catch(e=>alert("Swap failed: "+e.message));
+}
+
+function startBoatEdit(el){
+  const bo=Number(el.dataset.boatId);
+  const inp=document.createElement("input");
+  inp.value=BOATS[bo]||"";inp.placeholder="Boat "+bo;inp.className="boat-name-input";
+  el.textContent="";el.appendChild(inp);inp.focus();inp.select();
+  let done=false;
+  function finish(save){
+    if(done)return;done=true;
+    if(save){
+      const name=inp.value.trim()||null;
+      if(name!==(BOATS[bo]||null)){
+        BOATS[bo]=name;
+        fetch("/boat",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({id:bo,name})}).catch(()=>{});
+      }
+    }
+    el.textContent=BOATS[bo]||"Boat "+bo;
+  }
+  inp.addEventListener("blur",()=>finish(true));
+  inp.addEventListener("keydown",e=>{
+    if(e.key==="Enter"){e.preventDefault();finish(true);}
+    if(e.key==="Escape"){finish(false);}
+  });
 }
 
 // sort a boat's crew by level rank (low->high), then name
@@ -307,38 +340,43 @@ function boatKey(crew){
   return [Math.min(...ranks), Math.max(...ranks)];
 }
 
-function renderByBoat(){
-  const v=$("view"); v.innerHTML="";
-  for(const day of dayList()){
-    const dr=rows.filter(r=>r.day===day);
-    const boatIds=[...new Set(dr.map(r=>r.boat))];
-    let entries=boatIds.map(bo=>({bo,crew:dr.filter(r=>r.boat===bo)}));
-    // SORT BOATS BY LEVEL
-    entries.sort((x,y)=>{
-      const kx=boatKey(x.crew),ky=boatKey(y.crew);
-      return kx[0]-ky[0] || kx[1]-ky[1] ||
-        ((+x.bo||x.bo)-(+y.bo||y.bo))||(""+x.bo).localeCompare(y.bo);
-    });
-    let mixedCount=0,cards="";
-    for(const {bo,crew} of entries){
-      const sorted=sortCrew(crew);
-      const levels=[...new Set(sorted.map(c=>c.level))];
-      const mixed=levels.length>1; if(mixed)mixedCount++;
-      const tag=mixed?`${levels.length} levels`:levels[0];
-      const drag=!!currentScheduleId;
-      cards+=`<div class="boat ${mixed?'mixed':''}">
-        <div class="boat-top"><span class="boat-num">Boat ${bo}</span>
-          <span class="boat-tag">${tag}</span></div>
-        <ul class="crew">${sorted.map(c=>
-          `<li draggable="${drag}" data-day="${day}" data-name="${c.name.replace(/"/g,'&quot;')}" data-boat="${bo}"><span class="lv ${lvClass(c.level)}">${c.level}</span>${c.name}</li>`
-        ).join("")}</ul></div>`;
-    }
-    const meta=RESTRICTED.has(day)?`${mixedCount} mixed boat${mixedCount!==1?'s':''}`
-      :`${entries.length} boats`;
-    v.insertAdjacentHTML("beforeend",
-      `<section class="day"><div class="day-head"><h3>${day}</h3>${dayBadge(day)}
-        <span class="meta">${meta}</span></div><div class="grid">${cards}</div></section>`);
+function _daySectionEl(day,animate){
+  const dr=rows.filter(r=>r.day===day);
+  const boatIds=[...new Set(dr.map(r=>r.boat))];
+  let entries=boatIds.map(bo=>({bo,crew:dr.filter(r=>r.boat===bo)}));
+  entries.sort((x,y)=>{
+    const kx=boatKey(x.crew),ky=boatKey(y.crew);
+    return kx[0]-ky[0]||kx[1]-ky[1]||((+x.bo||x.bo)-(+y.bo||y.bo))||(""+x.bo).localeCompare(y.bo);
+  });
+  let mixedCount=0,cards="";
+  for(const {bo,crew} of entries){
+    const sorted=sortCrew(crew);
+    const levels=[...new Set(sorted.map(c=>c.level))];
+    const mixed=levels.length>1; if(mixed)mixedCount++;
+    const tag=mixed?`${levels.length} levels`:levels[0];
+    const drag=!!currentScheduleId;
+    const boatAttr=HAS_DB?` data-boat-id="${bo}"`:"";
+    const boatLabel=BOATS[bo]||"Boat "+bo;
+    cards+=`<div class="boat ${mixed?'mixed':''}">
+      <div class="boat-top"><span class="boat-num"${boatAttr}>${boatLabel}</span>
+        <span class="boat-tag">${tag}</span></div>
+      <ul class="crew">${sorted.map(c=>
+        `<li draggable="${drag}" data-day="${day}" data-name="${c.name.replace(/"/g,'&quot;')}" data-boat="${bo}"><span class="lv ${lvClass(c.level)}">${c.level}</span>${c.name}</li>`
+      ).join("")}</ul></div>`;
   }
+  const meta=RESTRICTED.has(day)?`${mixedCount} mixed boat${mixedCount!==1?'s':''}`
+    :`${entries.length} boats`;
+  const sec=document.createElement("section");
+  sec.className="day";sec.dataset.day=day;
+  if(!animate)sec.style.animation="none";
+  sec.innerHTML=`<div class="day-head"><h3>${day}</h3>${dayBadge(day)}
+    <span class="meta">${meta}</span></div><div class="grid">${cards}</div>`;
+  return sec;
+}
+
+function renderByBoat(){
+  const v=$("view");v.innerHTML="";
+  for(const day of dayList())v.appendChild(_daySectionEl(day,true));
 }
 
 function renderByKid(){
@@ -410,6 +448,10 @@ $("view").addEventListener("dragover",e=>{
 $("view").addEventListener("dragleave",e=>{
   const li=e.target.closest("li[data-name]");
   if(li)li.classList.remove("drop-target");});
+$("view").addEventListener("click",e=>{
+  if(!HAS_DB)return;
+  const el=e.target.closest(".boat-num[data-boat-id]");
+  if(el&&!el.querySelector("input"))startBoatEdit(el);});
 $("view").addEventListener("drop",e=>{
   e.preventDefault();
   const li=e.target.closest("li[data-name]");
