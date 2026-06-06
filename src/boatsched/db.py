@@ -126,6 +126,56 @@ def rename_boat(conn: sqlite3.Connection, boat_id: int, name) -> None:
     conn.commit()
 
 
+def add_yjs_state_column(conn: sqlite3.Connection) -> None:
+    """Add yjs_state BLOB to schedule table (idempotent)."""
+    try:
+        conn.execute("ALTER TABLE schedule ADD COLUMN yjs_state BLOB")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+
+def get_yjs_state(conn: sqlite3.Connection, schedule_id: int):
+    """Return persisted Yjs binary state for a schedule, or None."""
+    row = conn.execute(
+        "SELECT yjs_state FROM schedule WHERE id=?", (schedule_id,)
+    ).fetchone()
+    if row is None or row["yjs_state"] is None:
+        return None
+    return bytes(row["yjs_state"])
+
+
+def set_yjs_state(conn: sqlite3.Connection, schedule_id: int, state: bytes) -> None:
+    """Persist Yjs binary state for a schedule."""
+    conn.execute("UPDATE schedule SET yjs_state=? WHERE id=?", (state, schedule_id))
+    conn.commit()
+
+
+def replace_assignments(conn: sqlite3.Connection, schedule_id: int,
+                        assignments: list) -> None:
+    """Replace all boat_assignments for a schedule from Yjs commit.
+
+    assignments: list of (name, day, boat_id) tuples.
+    Raises RuntimeError if a member name is not found in the member table.
+    """
+    conn.execute("DELETE FROM boat_assignment WHERE schedule_id=?", (schedule_id,))
+    rows = []
+    for name, day, boat_id in assignments:
+        member = conn.execute(
+            "SELECT id FROM member WHERE name=?", (name,)
+        ).fetchone()
+        if member is None:
+            conn.rollback()
+            raise RuntimeError(f"member '{name}' not found")
+        rows.append((schedule_id, member["id"], boat_id, day))
+    conn.executemany(
+        "INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day)"
+        " VALUES (?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+
+
 def _create_tables(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS member (

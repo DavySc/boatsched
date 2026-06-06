@@ -1,22 +1,20 @@
 """Tests for boatsched.server HTTP endpoints and helpers."""
-import http.client
 import json
-import threading
 import time
 
 import pytest
+from fastapi.testclient import TestClient
 
 from boatsched import Config
 from boatsched import db as _db
-from boatsched.server import _extract_multipart, make_handler
-from http.server import ThreadingHTTPServer
+from boatsched.server import _extract_multipart, create_app
 
 
 ROSTER_CSV = b"name,level\nAlice,k\nBob,k\nCarol,b\nDave,b\n"
 
 
 # ---------------------------------------------------------------------------
-# Fixture: live server on a random port
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -26,31 +24,62 @@ def srv():
         restricted=["Sat"], diverse=["Fri"],
         stage_seconds=15, seconds=15,
     )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cfg))
-    port = server.server_address[1]
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    yield "127.0.0.1", port
-    server.shutdown()
+    app = create_app(cfg)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client
 
 
-def _get(srv, path):
-    conn = http.client.HTTPConnection(srv[0], srv[1], timeout=5)
-    conn.request("GET", path)
-    r = conn.getresponse()
-    body = r.read()
-    conn.close()
-    return r.status, body
+@pytest.fixture(scope="module")
+def srv_db(tmp_path_factory):
+    db_path = str(tmp_path_factory.mktemp("db") / "boatsched.db")
+    db_conn = _db.init_db(db_path)
+    cfg = Config(boats=2, levels=["k", "b"],
+                 restricted=["Sat"], diverse=["Fri"],
+                 stage_seconds=15, seconds=15)
+    app = create_app(cfg, db_conn)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client, db_conn
 
 
-def _post(srv, path, body, content_type="text/csv"):
-    conn = http.client.HTTPConnection(srv[0], srv[1], timeout=5)
-    headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
-    conn.request("POST", path, body=body, headers=headers)
-    r = conn.getresponse()
-    body = r.read()
-    conn.close()
-    return r.status, json.loads(body)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get(client, path):
+    r = client.get(path)
+    return r.status_code, r.content
+
+
+def _post(client, path, body, content_type="text/csv"):
+    r = client.post(path, content=body, headers={"Content-Type": content_type})
+    return r.status_code, json.loads(r.content)
+
+
+def _get_json(client, path):
+    status, body = _get(client, path)
+    return status, json.loads(body)
+
+
+def _poll_done(client, jid, timeout=60):
+    deadline = time.time() + timeout
+    data = {}
+    while time.time() < deadline:
+        _, data = _get_json(client, f"/status?id={jid}")
+        if data["status"] != "running":
+            break
+        time.sleep(0.2)
+    return data
+
+
+def _poll_db(db_conn, sql, args, timeout=10):
+    """Poll until the SQL query returns a row, then return it."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        row = db_conn.execute(sql, args).fetchone()
+        if row:
+            return row
+        time.sleep(0.1)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -163,22 +192,6 @@ class TestPostSolve:
         assert "id" in data
 
 
-def _get_json(srv, path):
-    status, body = _get(srv, path)
-    return status, json.loads(body)
-
-
-def _poll_done(srv, jid, timeout=60):
-    deadline = time.time() + timeout
-    data = {}
-    while time.time() < deadline:
-        _, data = _get_json(srv, f"/status?id={jid}")
-        if data["status"] != "running":
-            break
-        time.sleep(0.2)
-    return data
-
-
 class TestGetStatus:
     def test_unknown_job_returns_404(self, srv):
         status, data = _get_json(srv, "/status?id=doesnotexist")
@@ -214,24 +227,6 @@ class TestGetStatus:
         _, submit = _post(srv, "/solve", ROSTER_CSV)
         data = _poll_done(srv, submit["id"])
         assert {"mixed", "distinct", "repeats", "status_C"} <= set(data["stats"])
-
-
-# ---------------------------------------------------------------------------
-# Fixture: DB-backed server
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def srv_db(tmp_path_factory):
-    db_path = str(tmp_path_factory.mktemp("db") / "boatsched.db")
-    db_conn = _db.init_db(db_path)
-    cfg = Config(boats=2, levels=["k", "b"],
-                 restricted=["Sat"], diverse=["Fri"],
-                 stage_seconds=15, seconds=15)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cfg, db_conn))
-    port = server.server_address[1]
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield ("127.0.0.1", port), db_conn
-    server.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -305,17 +300,6 @@ class TestSeasonsApi:
 # ---------------------------------------------------------------------------
 # POST /solve persists to DB
 # ---------------------------------------------------------------------------
-
-def _poll_db(db_conn, sql, args, timeout=10):
-    """Poll until the SQL query returns a row, then return it."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        row = db_conn.execute(sql, args).fetchone()
-        if row:
-            return row
-        time.sleep(0.1)
-    return None
-
 
 class TestSolveWithDb:
     def test_schedule_row_persisted(self, srv_db):

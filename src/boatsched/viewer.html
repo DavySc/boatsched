@@ -109,6 +109,15 @@
     text-align:center;box-shadow:var(--shadow)}
   .stat b{display:block;font-size:24px}.stat span{font-size:11px;letter-spacing:.1em;
     text-transform:uppercase;color:#8a7a62}
+  /* Collaborative editing */
+  #collab-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    margin-bottom:12px;padding:8px 0}
+  .presence-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;
+    background:rgba(255,255,255,.6);border:1px solid var(--line);border-radius:8px;
+    font-size:13px;font-weight:600}
+  .presence-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;
+    box-shadow:0 0 0 2px rgba(34,197,94,.25)}
+  .crew li.conflict{background:rgba(194,82,45,.10);outline:2px dashed var(--accent);border-radius:6px}
 </style></head><body>
 <div class="wrap">
   <header><div class="kicker">Fleet Roster &middot; Daily Assignments</div>
@@ -157,6 +166,15 @@
       <div class="seg"><button id="byBoat" class="on">By Boat</button>
         <button id="byKid">By Person</button></div>
       <div class="seg"><button id="reload">&#8635; New roster</button></div>
+      <button id="start-collab" class="btn-sm hidden">Edit collaboratively</button>
+    </div>
+    <div id="collab-bar" class="hidden">
+      <div class="presence-badge">
+        <span class="presence-dot"></span>
+        <span id="presence-count">1</span>&nbsp;connected
+      </div>
+      <button id="commit-btn" class="btn-sm primary">Commit schedule</button>
+      <button id="stop-collab" class="btn-sm">Stop editing</button>
     </div>
     <div class="legend" id="legend"></div>
     <div id="view"></div>
@@ -164,13 +182,19 @@
 
   <footer>Served locally &middot; no data leaves your machine</footer>
 </div>
-<script>
+<script type="module">
+import * as Y from 'https://esm.sh/yjs@13.6.18';
+import { WebsocketProvider } from 'https://esm.sh/y-websocket@2.0.4';
+
 let CFG={levels:["k","b","A","B"],restricted:["Sat","Sun","Tue","Wed"],diverse:["Fri","Mon"]};
 let RESTRICTED,DIVERSE,LV_RANK;
 const DAY_ORDER=["Fri","Sat","Sun","Mon","Tue","Wed"];
 let rows=[],stats=null;
 let HAS_DB=false,selectedSeason=null,scheduleMode=null,currentScheduleId=null;
 let BOATS={};
+
+// Collaborative editing state
+let collabMode=false,ydoc=null,yprovider=null,ySchedule=null;
 
 fetch("/boats").then(r=>r.json()).then(boats=>{
   boats.forEach(b=>{BOATS[b.id]=b.name||null;});}).catch(()=>{});
@@ -291,7 +315,105 @@ function renderLegend(){
   $("legend").innerHTML=h;
 }
 
+// ---------------------------------------------------------------------------
+// Yjs collab helpers
+// ---------------------------------------------------------------------------
+
+function updateRowsFromYjs(){
+  if(!ySchedule)return;
+  const levelOf={};
+  rows.forEach(r=>{levelOf[r.name]=r.level;});
+  const newRows=[];
+  for(const [key,members] of ySchedule.entries()){
+    if(key.startsWith("_"))continue; // skip sentinel keys
+    const colon=key.indexOf(":");
+    if(colon<0)continue;
+    const day=key.slice(0,colon),boat=parseInt(key.slice(colon+1));
+    for(const name of members){
+      newRows.push({day,boat,name,level:levelOf[name]||""});
+    }
+  }
+  rows=newRows;
+}
+
+function startCollab(scheduleId){
+  if(collabMode)return;
+  ydoc=new Y.Doc();
+  const wsProto=location.protocol==="https:"?"wss":"ws";
+  const wsBase=`${wsProto}://${location.host}/collab`;
+  yprovider=new WebsocketProvider(wsBase,String(scheduleId),ydoc,{connect:true});
+  ySchedule=ydoc.getMap("schedule");
+
+  yprovider.on("status",({status})=>{
+    if(status==="connected")$("presence-count").textContent=
+      String(yprovider.awareness.getStates().size||1);
+  });
+  yprovider.awareness.on("change",()=>{
+    $("presence-count").textContent=String(yprovider.awareness.getStates().size||1);
+  });
+  yprovider.awareness.setLocalState({user:"instructor"});
+
+  ySchedule.observeDeep(events=>{
+    updateRowsFromYjs();
+    const affectedDays=new Set();
+    events.forEach(evt=>{
+      if(evt.path&&evt.path.length>0){
+        const k=String(evt.path[0]);
+        if(!k.startsWith("_"))affectedDays.add(k.split(":")[0]);
+      } else {
+        evt.keysChanged.forEach(k=>{if(!k.startsWith("_"))affectedDays.add(k.split(":")[0]);});
+      }
+    });
+    if(mode==="boat"){
+      affectedDays.forEach(day=>{
+        const old=document.querySelector(`section.day[data-day="${CSS.escape(day)}"]`);
+        if(old)old.replaceWith(_daySectionEl(day,false));
+      });
+    }
+  });
+
+  collabMode=true;
+  $("collab-bar").classList.remove("hidden");
+  $("start-collab").classList.add("hidden");
+}
+
+function stopCollab(){
+  if(!collabMode)return;
+  if(yprovider){yprovider.destroy();yprovider=null;}
+  ydoc=null;ySchedule=null;collabMode=false;
+  $("collab-bar").classList.add("hidden");
+  if(currentScheduleId&&HAS_DB)$("start-collab").classList.remove("hidden");
+}
+
+function moveKidYjs(day,nameA,nameB){
+  if(!ydoc||!ySchedule)return;
+  const ra=rows.find(r=>r.day===day&&r.name===nameA);
+  const rb=rows.find(r=>r.day===day&&r.name===nameB);
+  if(!ra||!rb||ra.boat===rb.boat)return;
+  const keyA=`${day}:${ra.boat}`,keyB=`${day}:${rb.boat}`;
+  ydoc.transact(()=>{
+    const arrA=ySchedule.get(keyA),arrB=ySchedule.get(keyB);
+    if(!arrA||!arrB)return;
+    const idxA=[...arrA].indexOf(nameA),idxB=[...arrB].indexOf(nameB);
+    if(idxA<0||idxB<0)return;
+    arrA.delete(idxA,1); arrA.insert(idxA,[nameB]);
+    arrB.delete(idxB,1); arrB.insert(idxB,[nameA]);
+  });
+  // Optimistic local update for immediate re-render
+  const t=ra.boat; ra.boat=rb.boat; rb.boat=t;
+  const old=document.querySelector(`section.day[data-day="${CSS.escape(day)}"]`);
+  if(old)old.replaceWith(_daySectionEl(day,false));
+}
+
+// ---------------------------------------------------------------------------
+// Schedule rendering
+// ---------------------------------------------------------------------------
+
 function swapKids(day,nameA,nameB){
+  if(collabMode&&ySchedule){
+    moveKidYjs(day,nameA,nameB);
+    return;
+  }
   fetch("/swap",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({schedule_id:currentScheduleId,day,name_a:nameA,name_b:nameB})
   }).then(r=>r.json()).then(d=>{
@@ -409,7 +531,16 @@ function renderByKid(){
 
 let mode="boat";
 const rerender=()=>mode==="boat"?renderByBoat():renderByKid();
-function showApp(){show("app");renderSummary();renderLegend();rerender();}
+function showApp(){
+  show("app");renderSummary();renderLegend();rerender();
+  // Show "Edit collaboratively" only when a saved schedule is loaded
+  const canCollab=HAS_DB&&currentScheduleId!=null&&!collabMode;
+  $("start-collab").classList.toggle("hidden",!canCollab);
+}
+
+// ---------------------------------------------------------------------------
+// Event listeners
+// ---------------------------------------------------------------------------
 
 fileInput.addEventListener("change",e=>{if(e.target.files[0])upload(e.target.files[0]);});
 ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{
@@ -422,6 +553,7 @@ $("byBoat").onclick=function(){mode="boat";this.classList.add("on");
 $("byKid").onclick=function(){mode="kid";this.classList.add("on");
   $("byBoat").classList.remove("on");rerender();};
 $("reload").onclick=()=>{
+  stopCollab();
   rows=[];stats=null;fileInput.value="";
   currentScheduleId=null;scheduleMode=null;
   if(HAS_DB){
@@ -432,6 +564,39 @@ $("reload").onclick=()=>{
   }
   show("loader");
 };
+$("start-collab").onclick=()=>{
+  if(currentScheduleId)startCollab(currentScheduleId);
+};
+$("stop-collab").onclick=()=>stopCollab();
+$("commit-btn").onclick=()=>{
+  if(!currentScheduleId)return;
+  $("commit-btn").disabled=true;
+  $("commit-btn").textContent="Committing…";
+  fetch(`/schedule/${currentScheduleId}/commit`,{method:"POST"})
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.ok){
+        $("commit-btn").textContent="Committed ✓";
+        setTimeout(()=>{$("commit-btn").textContent="Commit schedule";$("commit-btn").disabled=false;},2000);
+      } else {
+        $("commit-btn").textContent="Commit schedule";
+        $("commit-btn").disabled=false;
+        // Highlight conflicting kids
+        document.querySelectorAll(".crew li.conflict").forEach(el=>el.classList.remove("conflict"));
+        (d.conflicts||[]).forEach(c=>{
+          document.querySelectorAll(`li[data-day="${CSS.escape(c.day)}"][data-name="${CSS.escape(c.name)}"]`)
+            .forEach(el=>el.classList.add("conflict"));
+        });
+        alert("Conflicts detected: "+d.conflicts.map(c=>`${c.name} on ${c.day}`).join(", "));
+      }
+    })
+    .catch(e=>{
+      $("commit-btn").textContent="Commit schedule";
+      $("commit-btn").disabled=false;
+      alert("Commit failed: "+e.message);
+    });
+};
+
 let dragSrc=null;
 $("view").addEventListener("dragstart",e=>{
   const li=e.target.closest("li[data-name]");if(!li){dragSrc=null;return;}
@@ -449,7 +614,7 @@ $("view").addEventListener("dragleave",e=>{
   const li=e.target.closest("li[data-name]");
   if(li)li.classList.remove("drop-target");});
 $("view").addEventListener("click",e=>{
-  if(!HAS_DB)return;
+  if(!HAS_DB||collabMode)return;
   const el=e.target.closest(".boat-num[data-boat-id]");
   if(el&&!el.querySelector("input"))startBoatEdit(el);});
 $("view").addEventListener("drop",e=>{
