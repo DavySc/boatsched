@@ -6,7 +6,8 @@ input has a corresponding row in the member table with the correct level.
 import pytest
 
 from boatsched.db import (get_connection, add_or_update_members,
-                          create_season, list_seasons, save_schedule, init_db)
+                          create_season, list_seasons, save_schedule, init_db,
+                          list_schedules, get_schedule, swap_assignment)
 from boatsched.roster import parse_roster_bytes, roster_from_counts
 
 
@@ -263,3 +264,126 @@ class TestSaveSchedule:
             save_schedule(fconn, sid, "{}", [
                 {"day": "Sat", "boat": 1, "name": "Nobody", "level": "k"},
             ])
+
+
+# ---------------------------------------------------------------------------
+# list_schedules
+# ---------------------------------------------------------------------------
+
+class TestListSchedules:
+    def _seed(self, conn, year=2026):
+        add_or_update_members(conn, _MEMBERS_4)
+        return create_season(conn, year)
+
+    def test_empty_when_no_schedules(self, fconn):
+        sid = self._seed(fconn)
+        assert list_schedules(fconn, sid) == []
+
+    def test_returns_saved_schedule(self, fconn):
+        sid = self._seed(fconn)
+        save_schedule(fconn, sid, "{}", _RESULT_4)
+        assert len(list_schedules(fconn, sid)) == 1
+
+    def test_has_id_and_created_keys(self, fconn):
+        sid = self._seed(fconn)
+        save_schedule(fconn, sid, "{}", _RESULT_4)
+        s = list_schedules(fconn, sid)[0]
+        assert "id" in s and "created" in s
+
+    def test_newest_first(self, fconn):
+        sid = self._seed(fconn)
+        id1 = save_schedule(fconn, sid, "{}", _RESULT_4)
+        id2 = save_schedule(fconn, sid, "{}", _RESULT_4)
+        ids = [s["id"] for s in list_schedules(fconn, sid)]
+        assert ids == [id2, id1]
+
+    def test_isolated_by_season(self, fconn):
+        sid1 = self._seed(fconn, 2026)
+        sid2 = create_season(fconn, 2027)
+        save_schedule(fconn, sid1, "{}", _RESULT_4)
+        assert list_schedules(fconn, sid2) == []
+
+
+# ---------------------------------------------------------------------------
+# get_schedule
+# ---------------------------------------------------------------------------
+
+class TestGetSchedule:
+    def _seed(self, conn, year=2026):
+        add_or_update_members(conn, _MEMBERS_4)
+        sid = create_season(conn, year)
+        return save_schedule(conn, sid, "{}", _RESULT_4)
+
+    def test_returns_all_rows(self, fconn):
+        schedule_id = self._seed(fconn)
+        rows = get_schedule(fconn, schedule_id)
+        assert len(rows) == len(_RESULT_4)
+
+    def test_row_has_expected_keys(self, fconn):
+        schedule_id = self._seed(fconn)
+        row = get_schedule(fconn, schedule_id)[0]
+        assert {"day", "boat", "name", "level"} <= set(row)
+
+    def test_names_match_input(self, fconn):
+        schedule_id = self._seed(fconn)
+        names = {r["name"] for r in get_schedule(fconn, schedule_id)}
+        assert names == {"Alice", "Bob", "Carol", "Dave"}
+
+    def test_empty_for_unknown_id(self, fconn):
+        assert get_schedule(fconn, 9999) == []
+
+
+# ---------------------------------------------------------------------------
+# swap_assignment
+# ---------------------------------------------------------------------------
+
+class TestSwapAssignment:
+    def _seed(self, conn, year=2026):
+        add_or_update_members(conn, _MEMBERS_4)
+        sid = create_season(conn, year)
+        return save_schedule(conn, sid, "{}", _RESULT_4)
+
+    def _boat_of(self, conn, schedule_id, name, day="Sat"):
+        return conn.execute(
+            "SELECT ba.boat FROM boat_assignment ba"
+            " JOIN member m ON m.id = ba.member_id"
+            " WHERE ba.schedule_id=? AND ba.day=? AND m.name=?",
+            (schedule_id, day, name),
+        ).fetchone()["boat"]
+
+    def test_swap_exchanges_boats(self, fconn):
+        sid = self._seed(fconn)
+        boat_alice_before = self._boat_of(fconn, sid, "Alice")
+        boat_carol_before = self._boat_of(fconn, sid, "Carol")
+        swap_assignment(fconn, sid, "Sat", "Alice", "Carol")
+        assert self._boat_of(fconn, sid, "Alice") == boat_carol_before
+        assert self._boat_of(fconn, sid, "Carol") == boat_alice_before
+
+    def test_same_boat_is_noop(self, fconn):
+        sid = self._seed(fconn)
+        boat_before = self._boat_of(fconn, sid, "Alice")
+        swap_assignment(fconn, sid, "Sat", "Alice", "Bob")
+        assert self._boat_of(fconn, sid, "Alice") == boat_before
+
+    def test_swap_is_reversible(self, fconn):
+        sid = self._seed(fconn)
+        boat_before = self._boat_of(fconn, sid, "Alice")
+        swap_assignment(fconn, sid, "Sat", "Alice", "Carol")
+        swap_assignment(fconn, sid, "Sat", "Alice", "Carol")
+        assert self._boat_of(fconn, sid, "Alice") == boat_before
+
+    def test_unknown_member_raises(self, fconn):
+        sid = self._seed(fconn)
+        with pytest.raises(RuntimeError, match="not found"):
+            swap_assignment(fconn, sid, "Sat", "Alice", "Nobody")
+
+    def test_row_count_unchanged_after_swap(self, fconn):
+        sid = self._seed(fconn)
+        before = fconn.execute(
+            "SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?", (sid,)
+        ).fetchone()[0]
+        swap_assignment(fconn, sid, "Sat", "Alice", "Carol")
+        after = fconn.execute(
+            "SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?", (sid,)
+        ).fetchone()[0]
+        assert before == after

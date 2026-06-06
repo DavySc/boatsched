@@ -76,7 +76,7 @@ def save_schedule(conn: sqlite3.Connection, season_id: int,
 
 def list_schedules(conn: sqlite3.Connection, season_id: int) -> list:
     return [dict(r) for r in conn.execute(
-        "SELECT id, created FROM schedule WHERE season_id=? ORDER BY created DESC",
+        "SELECT id, created FROM schedule WHERE season_id=? ORDER BY id DESC",
         (season_id,),
     )]
 
