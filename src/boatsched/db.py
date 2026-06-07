@@ -78,7 +78,7 @@ def save_schedule(conn: sqlite3.Connection, season_id: int,
 
 def list_schedules(conn: sqlite3.Connection, season_id: int) -> list:
     return [dict(r) for r in conn.execute(
-        "SELECT id, created FROM schedule WHERE season_id=? ORDER BY id DESC",
+        "SELECT id, created, start_date FROM schedule WHERE season_id=? ORDER BY id DESC",
         (season_id,),
     )]
 
@@ -176,6 +176,15 @@ def add_yjs_state_column(conn: sqlite3.Connection) -> None:
         pass  # column already exists
 
 
+def add_start_date_column(conn: sqlite3.Connection) -> None:
+    """Add start_date DATE to schedule table (idempotent)."""
+    try:
+        conn.execute("ALTER TABLE schedule ADD COLUMN start_date DATE")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+
 def get_yjs_state(conn: sqlite3.Connection, schedule_id: int):
     """Return persisted Yjs binary state for a schedule, or None."""
     row = conn.execute(
@@ -189,6 +198,24 @@ def get_yjs_state(conn: sqlite3.Connection, schedule_id: int):
 def set_yjs_state(conn: sqlite3.Connection, schedule_id: int, state: bytes) -> None:
     """Persist Yjs binary state for a schedule."""
     conn.execute("UPDATE schedule SET yjs_state=? WHERE id=?", (state, schedule_id))
+    conn.commit()
+
+
+def get_schedule_start_date(conn: sqlite3.Connection, schedule_id: int):
+    """Return the start_date ISO string for a schedule, or None."""
+    row = conn.execute(
+        "SELECT start_date FROM schedule WHERE id=?", (schedule_id,)
+    ).fetchone()
+    return row["start_date"] if row else None
+
+
+def set_schedule_start_date(
+    conn: sqlite3.Connection, schedule_id: int, date_str
+) -> None:
+    """Set (or clear) the start_date for a schedule."""
+    conn.execute(
+        "UPDATE schedule SET start_date=? WHERE id=?", (date_str, schedule_id)
+    )
     conn.commit()
 
 
@@ -240,10 +267,11 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS schedule (
-            id        INTEGER PRIMARY KEY,
-            season_id INTEGER NOT NULL REFERENCES season(id),
-            created   TIMESTAMP DEFAULT (datetime('now')),
-            config    TEXT NOT NULL
+            id         INTEGER PRIMARY KEY,
+            season_id  INTEGER NOT NULL REFERENCES season(id),
+            created    TIMESTAMP DEFAULT (datetime('now')),
+            start_date DATE,
+            config     TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS boat (

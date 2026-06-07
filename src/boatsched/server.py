@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import date as _date
 import importlib.resources as resources
 import json
 import secrets
@@ -266,6 +267,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     # Run DB column migrations once on startup
     if db_conn is not None:
         _db.add_yjs_state_column(db_conn)
+        _db.add_start_date_column(db_conn)
 
     # Per-schedule Yjs docs and connected WebSocket sets (app-scoped state)
     docs: dict[int, pycrdt.Doc] = {}
@@ -291,6 +293,18 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         if _is_open():
             return 0  # bootstrap: no passwords set yet
         return None
+
+    def _is_locked(schedule_id: int) -> bool:
+        """True when the schedule's start_date is today or in the past."""
+        if db_conn is None:
+            return False
+        start = _db.get_schedule_start_date(db_conn, schedule_id)
+        if not start:
+            return False
+        try:
+            return _date.fromisoformat(start) <= _date.today()
+        except ValueError:
+            return False
 
     @app.middleware("http")
     async def _auth_middleware(request: Request, call_next):
@@ -582,7 +596,9 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             return JSONResponse({"error": "missing id"}, status_code=400)
         try:
             result = await asyncio.to_thread(_db.get_schedule, db_conn, id)
-            return {"rows": result}
+            start_date = await asyncio.to_thread(
+                _db.get_schedule_start_date, db_conn, id)
+            return {"rows": result, "start_date": start_date}
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -635,6 +651,19 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     # Swap
     # -----------------------------------------------------------------------
 
+    @app.post("/schedule/{schedule_id}/start-date")
+    async def set_start_date(schedule_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        body = await request.json()
+        date_str = body.get("start_date") or None
+        try:
+            await asyncio.to_thread(
+                _db.set_schedule_start_date, db_conn, schedule_id, date_str)
+            return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/swap")
     async def swap_endpoint(request: Request):
         if db_conn is None:
@@ -647,6 +676,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             name_b = str(body["name_b"])
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        if _is_locked(schedule_id):
+            return JSONResponse({"error": "schedule is locked"}, status_code=403)
         try:
             await asyncio.to_thread(
                 _db.swap_assignment, db_conn, schedule_id, day, name_a, name_b)
@@ -662,6 +693,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     async def commit_schedule(schedule_id: int):
         if db_conn is None:
             return JSONResponse({"error": "no database"}, status_code=503)
+        if _is_locked(schedule_id):
+            return JSONResponse({"error": "schedule is locked"}, status_code=403)
 
         doc = await _get_doc(schedule_id)
         sch = doc.get("schedule", type=pycrdt.Map)
@@ -739,12 +772,13 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
                         missing = doc.get_update(payload)
                         await ws.send_bytes(_encode_sync_step2(missing))
                     elif sub_type in (SYNC_STEP2, SYNC_UPDATE):
-                        # Client sent updates → apply, persist, broadcast
-                        doc.apply_update(payload)
-                        state = doc.get_update()
-                        await asyncio.to_thread(
-                            _db.set_yjs_state, db_conn, schedule_id, state)
-                        await _broadcast(_encode_update_msg(payload), ws)
+                        if not _is_locked(schedule_id):
+                            # Apply, persist, and broadcast only when not locked
+                            doc.apply_update(payload)
+                            state = doc.get_update()
+                            await asyncio.to_thread(
+                                _db.set_yjs_state, db_conn, schedule_id, state)
+                            await _broadcast(_encode_update_msg(payload), ws)
 
                 elif msg_type == MSG_AWARENESS:
                     await _broadcast(raw, ws)

@@ -55,7 +55,7 @@
     border-bottom:1px solid var(--line)}
   .boat-num{font-weight:800;font-size:15px}
   .boat-tag{margin-left:auto;font:600 10px/1 ui-monospace,monospace;letter-spacing:.1em;
-    text-transform:uppercase;padding:4px 7px;border-radius:5px;color:#fff;background:var(--k)}
+    padding:4px 7px;border-radius:5px;color:#fff}
   .boat.mixed .boat-tag{background:var(--mix)}
   .crew{list-style:none;padding:8px 10px 12px}
   .crew li{display:flex;align-items:center;gap:9px;padding:5px 4px;font-size:15px}
@@ -200,6 +200,10 @@
         <select id="schedule-pick" class="sel"></select>
       </div>
       <div id="schedule-hint" class="season-hint hidden">Pick a schedule above or choose &ldquo;Upload new roster&rdquo;.</div>
+      <div id="schedule-date-row" class="season-row hidden">
+        <label for="schedule-start-date" style="white-space:nowrap">Start date</label>
+        <input type="date" id="schedule-start-date" class="sel" style="max-width:160px;flex:0 0 auto">
+      </div>
     </div>
     <label class="drop" id="drop" for="file"><span class="anchor">&#9875;</span>
       <h2>Drop your roster CSV here</h2>
@@ -222,15 +226,14 @@
       <div class="seg"><button id="byBoat" class="on">By Boat</button>
         <button id="byKid">By Person</button></div>
       <div class="seg"><button id="reload">&#8635; New roster</button></div>
-      <button id="start-collab" class="btn-sm hidden">Edit collaboratively</button>
     </div>
     <div id="collab-bar" class="hidden">
       <div class="presence-badge">
         <span class="presence-dot"></span>
         <span id="presence-count">1</span>&nbsp;connected
       </div>
+      <span id="readonly-badge" class="badge restricted hidden" style="font-size:11px;padding:4px 8px">Read-only · past start date</span>
       <button id="commit-btn" class="btn-sm primary">Commit schedule</button>
-      <button id="stop-collab" class="btn-sm">Stop editing</button>
     </div>
     <div class="legend" id="legend"></div>
     <div id="view"></div>
@@ -276,6 +279,7 @@ let RESTRICTED,DIVERSE,LV_RANK;
 const DAY_ORDER=["Fri","Sat","Sun","Mon","Tue","Wed"];
 let rows=[],stats=null;
 let HAS_DB=false,selectedSeason=null,scheduleMode=null,currentScheduleId=null;
+let scheduleStartDate=null;
 let BOATS={};
 
 // Collaborative editing state
@@ -326,7 +330,8 @@ function fetchSchedule(id){
   fetch("/schedule?id="+id).then(r=>r.json()).then(data=>{
     stopTimer();
     if(data.error)throw new Error(data.error);
-    rows=data.rows;stats=null;currentScheduleId=id;showApp();
+    rows=data.rows;stats=null;currentScheduleId=id;
+    scheduleStartDate=data.start_date||null;showApp();
   }).catch(e=>{stopTimer();err.textContent="⚠ "+e.message;
     err.classList.remove("hidden");show("loader");});
 }
@@ -366,7 +371,7 @@ function poll(id){
     stopTimer();
     if(j.status==="error"){ err.textContent="&#9888; "+j.error;
       err.classList.remove("hidden"); show("loader"); return; }
-    rows=j.result;stats=j.stats;
+    rows=j.result;stats=j.stats;scheduleStartDate=null;
     if(j.schedule_id!=null){currentScheduleId=j.schedule_id;
       if(HAS_DB&&selectedSeason)loadSchedules(selectedSeason);}
     showApp();
@@ -458,8 +463,7 @@ function startCollab(scheduleId){
   });
 
   collabMode=true;
-  $("collab-bar").classList.remove("hidden");
-  $("start-collab").classList.add("hidden");
+  updateLockUI();
 }
 
 function stopCollab(){
@@ -467,7 +471,6 @@ function stopCollab(){
   if(yprovider){yprovider.destroy();yprovider=null;}
   ydoc=null;ySchedule=null;collabMode=false;
   $("collab-bar").classList.add("hidden");
-  if(currentScheduleId&&HAS_DB)$("start-collab").classList.remove("hidden");
 }
 
 function moveKidYjs(day,nameA,nameB){
@@ -527,7 +530,9 @@ function startBoatEdit(el){
           body:JSON.stringify({id:bo,name})}).catch(()=>{});
       }
     }
-    el.textContent=BOATS[bo]||"Boat "+bo;
+    document.querySelectorAll(`.boat-num[data-boat-id="${bo}"]`).forEach(n=>{
+      n.textContent=BOATS[bo]||"Boat "+bo;
+    });
   }
   inp.addEventListener("blur",()=>finish(true));
   inp.addEventListener("keydown",e=>{
@@ -561,12 +566,13 @@ function _daySectionEl(day,animate){
     const levels=[...new Set(sorted.map(c=>c.level))];
     const mixed=levels.length>1; if(mixed)mixedCount++;
     const tag=mixed?`${levels.length} levels`:levels[0];
-    const drag=!!currentScheduleId;
+    const tagCls=mixed?'':'lv-'+levels[0];
+    const drag=!!currentScheduleId&&!isLocked();
     const boatAttr=HAS_DB?` data-boat-id="${bo}"`:"";
     const boatLabel=BOATS[bo]||"Boat "+bo;
     cards+=`<div class="boat ${mixed?'mixed':''}">
       <div class="boat-top"><span class="boat-num"${boatAttr}>${boatLabel}</span>
-        <span class="boat-tag">${tag}</span></div>
+        <span class="boat-tag ${tagCls}">${tag}</span></div>
       <ul class="crew">${sorted.map(c=>
         `<li draggable="${drag}" data-day="${day}" data-name="${c.name.replace(/"/g,'&quot;')}" data-boat="${bo}"><span class="lv ${lvClass(c.level)}">${c.level}</span>${c.name}</li>`
       ).join("")}</ul></div>`;
@@ -646,11 +652,28 @@ function renderByKid(){
 
 let mode="boat";
 const rerender=()=>mode==="boat"?renderByBoat():renderByKid();
+
+function isLocked(){
+  if(!scheduleStartDate)return false;
+  return scheduleStartDate<=new Date().toISOString().slice(0,10);
+}
+
+function updateLockUI(){
+  const locked=isLocked();
+  $("commit-btn").disabled=locked;
+  $("commit-btn").classList.toggle("hidden",locked);
+  $("readonly-badge").classList.toggle("hidden",!locked);
+}
+
 function showApp(){
   show("app");renderSummary();renderLegend();rerender();
-  // Show "Edit collaboratively" only when a saved schedule is loaded
-  const canCollab=HAS_DB&&currentScheduleId!=null&&!collabMode;
-  $("start-collab").classList.toggle("hidden",!canCollab);
+  if(HAS_DB&&currentScheduleId!=null){
+    $("schedule-date-row").classList.remove("hidden");
+    $("schedule-start-date").value=scheduleStartDate||"";
+    $("collab-bar").classList.remove("hidden");
+    if(!collabMode)startCollab(currentScheduleId);
+  }
+  updateLockUI();
 }
 
 // ---------------------------------------------------------------------------
@@ -670,7 +693,8 @@ $("byKid").onclick=function(){mode="kid";this.classList.add("on");
 $("reload").onclick=()=>{
   stopCollab();
   rows=[];stats=null;fileInput.value="";
-  currentScheduleId=null;scheduleMode=null;
+  currentScheduleId=null;scheduleMode=null;scheduleStartDate=null;
+  $("schedule-date-row").classList.add("hidden");
   if(HAS_DB){
     selectedSeason=null;
     $("schedule-bar").classList.add("hidden");
@@ -679,10 +703,6 @@ $("reload").onclick=()=>{
   }
   show("loader");
 };
-$("start-collab").onclick=()=>{
-  if(currentScheduleId)startCollab(currentScheduleId);
-};
-$("stop-collab").onclick=()=>stopCollab();
 $("commit-btn").onclick=()=>{
   if(!currentScheduleId)return;
   $("commit-btn").disabled=true;
@@ -863,6 +883,18 @@ $("pwd-input").addEventListener("keydown",e=>{if(e.key==="Enter")submitPassword(
 $("add-inst-btn").addEventListener("click",addInstructor);
 $("new-inst-pw").addEventListener("keydown",e=>{if(e.key==="Enter")addInstructor();});
 $("pwd-modal").addEventListener("click",e=>{if(e.target===$("pwd-modal"))closePwdModal();});
+
+$("schedule-start-date").addEventListener("change",e=>{
+  if(!currentScheduleId)return;
+  const val=e.target.value||null;
+  fetch(`/schedule/${currentScheduleId}/start-date`,{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({start_date:val})
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok){scheduleStartDate=val;updateLockUI();rerender();}
+    else alert("Failed to set start date: "+(d.error||"unknown error"));
+  }).catch(e=>alert("Failed: "+e.message));
+});
 
 $("season-pick").addEventListener("change",e=>{
   selectedSeason=e.target.value||null;
