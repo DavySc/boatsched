@@ -2,46 +2,108 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository layout
+
+```
+boatsched/
+├── frontend/          React SPA (Zeilkamp App — evaluation tracker)
+│   ├── src/           TypeScript source
+│   │   ├── App.tsx
+│   │   ├── main.tsx
+│   │   ├── index.css          Tailwind v4 entry
+│   │   ├── vite-env.d.ts
+│   │   ├── assets/            pzk-logo.png
+│   │   ├── components/        App-level components
+│   │   │   ├── Login.tsx
+│   │   │   ├── StudentManagement.tsx
+│   │   │   ├── LevelSelection.tsx
+│   │   │   ├── StudentSelection.tsx
+│   │   │   ├── ProgressRecord.tsx
+│   │   │   ├── DaySelection.tsx
+│   │   │   ├── BoatAllocation.tsx
+│   │   │   ├── figma/ImageWithFallback.tsx
+│   │   │   └── ui/            shadcn/ui components (do not edit manually)
+│   │   ├── styles/globals.css CSS variables + base layer
+│   │   └── utils/api.ts       Typed wrappers around /api/* endpoints
+│   ├── index.html
+│   ├── vite.config.ts         proxies /api and /optimizer to localhost:8000
+│   ├── tsconfig*.json
+│   └── package.json
+├── src/boatsched/     Python package
+│   ├── solver.py      CP-SAT model — DO NOT MODIFY
+│   ├── roster.py      roster ingestion — DO NOT MODIFY
+│   ├── cli.py         CLI entry point — DO NOT MODIFY
+│   ├── db.py          SQLite helpers
+│   ├── server.py      FastAPI app factory
+│   └── viewer.html    Rooster Optimizer SPA (embedded asset)
+├── tests/
+├── deploy/
+│   ├── nginx.conf
+│   └── boatsched.service
+├── Dockerfile
+├── docker-compose.yml
+└── pyproject.toml
+```
+
 ## Setup
 
 ```bash
+# Python
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"    # includes pytest, httpx, pytest-asyncio
+
+# Frontend
+cd frontend
+npm install
 ```
 
 ## Commands
 
 ```bash
-# Run tests
+# Run all tests
 pytest
 
 # Run a single test
 pytest tests/test_boatsched.py::test_tiny_solve
 
-# CLI (requires --roster or --counts, and --boats)
+# Python backend (serves on :8000; serves React SPA if frontend/dist/ exists)
+boatsched-server --db boatsched.db
+
+# Frontend dev server (proxies /api to :8000, live-reload)
+cd frontend && npm run dev    # http://localhost:5173
+
+# Build frontend for production
+cd frontend && npm run build  # output → frontend/dist/
+
+# CLI
 boatsched --roster examples/roster_52.csv --boats 13 --out schedule.csv
 boatsched --counts k=12 b=16 A=12 B=12 --boats 13
-
-# Web server
-boatsched-server              # http://localhost:8000
-boatsched-server --db boatsched.db   # with SQLite persistence
 ```
 
 ## Architecture
 
-The package lives under `src/boatsched/` and has four modules:
+### Python package (`src/boatsched/`)
 
-- **`solver.py`** — core CP-SAT model and solve pipeline. `Config` holds all tunables. `build_model()` constructs the OR-Tools model with three objective variables (`total_mixed`, `total_distinct`, `total_repeats`). `staged_solve()` runs them in strict lexicographic order A→B→C, locking each optimal value as a hard constraint before solving the next stage. `solve()` is the single end-to-end entry point that callers and tests use.
-- **`roster.py`** — roster ingestion only. `load_roster()` reads a file; `parse_roster_bytes()` reads raw bytes (used by the server for HTTP uploads); `roster_from_counts()` builds a synthetic roster from a `{level: n}` dict.
-- **`server.py`** — FastAPI/uvicorn HTTP+WebSocket server. `create_app(cfg, db_conn) → FastAPI` is the app factory used by tests and `main()`. Background solve jobs run in `threading.Thread(daemon=True)`. The UI is the single embedded `viewer.html` file.
-- **`cli.py`** — thin argparse wrapper around `solve()`. Prints progress to stderr, results to stdout, and optionally writes a CSV.
+- **`solver.py`** — core CP-SAT model. `Config` holds all tunables. `staged_solve()` runs stages A→B→C in strict lexicographic order, locking each optimum as a hard constraint before the next stage. `solve()` is the single entry point used by callers and tests.
+- **`roster.py`** — roster ingestion. `load_roster()` reads a file; `parse_roster_bytes()` reads raw bytes for HTTP uploads; `roster_from_counts()` builds a synthetic roster.
+- **`server.py`** — FastAPI app factory: `create_app(cfg, db_conn) → FastAPI`. Background solve jobs run in `threading.Thread(daemon=True)`. Serves the React SPA (when `frontend/dist/` is present) and the optimizer.
+- **`cli.py`** — thin argparse wrapper around `solve()`.
+- **`db.py`** — all SQLite helpers. Schema is created by `_create_tables()`; migrations are additive ALTER TABLE calls.
 
-### Server endpoints
+### Frontend (`frontend/`)
+
+Vite + React 18 + TypeScript + Tailwind v4 (`@tailwindcss/vite` plugin — no `tailwind.config.js` or PostCSS config needed). Component library is shadcn/ui (`frontend/src/components/ui/`).
+
+The Vite dev server proxies `/api`, `/optimizer`, and `/collab` (WebSocket) to `localhost:8000`, so both the Python server and the Vite dev server must be running simultaneously during development.
+
+### Server routes
+
+#### Existing (Rooster Optimizer)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Serve `viewer.html` |
+| GET | `/optimizer` | Serve `viewer.html` (Rooster Optimizer SPA) |
 | GET | `/config` | Solver config JSON |
 | GET/POST | `/seasons` | List / create seasons |
 | GET/POST | `/boats`, `/boat` | List boats / rename a boat |
@@ -52,42 +114,110 @@ The package lives under `src/boatsched/` and has four modules:
 | POST | `/swap` | Swap two kids between boats |
 | WS | `/collab/{schedule_id}` | Yjs collaborative editing |
 | POST | `/schedule/{id}/commit` | Validate and write Yjs state to DB |
+| POST | `/schedule/{id}/start-date` | Set schedule start date (locks edits) |
+
+#### Auth (form-based, for the Optimizer's HTML login page)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/login` | HTML login page |
+| POST | `/login` | Form-based login → sets `bsession` cookie |
+| POST | `/logout` | Clear session |
+| GET/POST | `/setup` | First-time instructor account creation |
+| GET/POST | `/instructor` | Create additional instructor |
+| POST | `/set-password` | Change instructor password |
+| GET | `/instructors` | List instructors |
+| GET | `/me` | Current session info |
+
+#### API (JSON, for the React SPA)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/login` | JSON login `{name, password}` → sets `bsession` cookie |
+| POST | `/api/auth/logout` | Clear session |
+| GET | `/api/auth/me` | Check current session |
+| GET | `/api/health` | Health check |
+| GET | `/api/students` | List active students `{students: Student[]}` |
+| POST | `/api/students` | Upsert student list `{students}` |
+| PUT | `/api/students/{id}` | Update one student |
+| DELETE | `/api/students/{id}` | Soft-delete (sets active=0) |
+| GET | `/api/progress` | All progress records `{progressData: StudentProgress[]}` |
+| GET | `/api/progress/{studentId}` | One student's progress |
+| POST | `/api/progress` | Save/update progress record |
+| DELETE | `/api/progress/{studentId}` | Delete progress record |
+| GET | `/api/boat-allocations` | All day allocations `{boatAllocations: DayAllocation[]}` |
+| GET | `/api/boat-allocations/{day}` | One day's allocation |
+| POST | `/api/boat-allocations` | Save/update day allocation |
+| DELETE | `/api/boat-allocations/{day}` | Delete day allocation |
+
+#### Static (React SPA)
+
+`/` and all unmatched GET paths serve `frontend/dist/index.html` when that file exists, giving the SPA full control of client-side routing. Static assets under `/assets/` are served directly. If `frontend/dist/` does not exist (dev mode with Vite), `viewer.html` is served instead.
+
+### DB schema
+
+#### Original tables (do not modify `_create_tables()`)
+
+```sql
+member          (id, name, level TEXT CHECK IN ('k','b','A','B'), active, joined)
+instructor      (instructor_id, member_id, password_hash BLOB, password_salt BLOB)
+season          (id, year)
+schedule        (id, season_id, created, start_date, config TEXT, yjs_state BLOB)
+boat            (boat_id, name, notes)
+boat_assignment (id, schedule_id, member_id, boat_id, day)
+```
+
+#### Camp tracker tables (added by `add_camp_tables()`)
+
+```sql
+progress_record (student_id TEXT PK, data_json TEXT)
+day_allocation  (day TEXT PK, data_json TEXT)
+```
+
+`progress_record` and `day_allocation` store the full JSON objects from the React frontend verbatim. `student_id` in `progress_record` is `member.id` serialised as a string.
+
+#### Level mapping
+
+The React frontend uses numeric levels; the DB uses strings:
+
+| Frontend | DB |
+|---|---|
+| 1 (Ketelbinkie) | `'k'` |
+| 2 (Bemanning) | `'b'` |
+| 3 (A) | `'A'` |
+| 4 (B) | `'B'` |
+
+Mapping lives in `db.py`: `_LEVEL_TO_NUM`, `_NUM_TO_LEVEL`.
 
 ### Lexicographic objective (A > B > C)
 
 | Stage | Objective | Days |
 |---|---|---|
-| A | Minimize mixed-level boats | `restricted` (Sat/Sun/Tue/Wed by default) |
-| B | Maximize distinct levels per boat | `diverse` (Fri/Mon by default) |
-| C | Minimize repeat co-boatings (Social-Golfer) | all days |
+| A | Minimise mixed-level boats | `restricted` (Sat/Sun/Tue/Wed by default) |
+| B | Maximise distinct levels per boat | `diverse` (Fri/Mon by default) |
+| C | Minimise repeat co-boatings (Social-Golfer) | all days |
 
-`adj` (default 1) is a hard constraint on restricted days: boats may only contain levels whose indices differ by at most `adj`; wider gaps are forbidden.
-
-### Key constraints
-
-- Every kid is assigned to exactly one boat per day (partition constraint).
-- Every boat has exactly `N // boats` kids per day (uniform capacity).
-- Stage C is the hard one — it usually finishes `FEASIBLE`, not `OPTIMAL`. Raise `--seconds` to tighten it.
+`adj` (default 1) is a hard constraint: on restricted days boats may only span levels whose indices differ by at most `adj`.
 
 ### Yjs collaborative editing
 
-The WebSocket endpoint `/collab/{schedule_id}` implements the y-websocket binary sync protocol (lib0 varint encoding). The server maintains one `pycrdt.Doc` per schedule (lazily loaded from the `yjs_state` BLOB column on the `schedule` table). The Y.Doc data model:
+`/collab/{schedule_id}` implements the y-websocket binary sync protocol (lib0 varint encoding). The server maintains one `pycrdt.Doc` per schedule, lazily loaded from the `yjs_state` BLOB. The Y.Doc model:
 
-- Map named `"schedule"` with keys `"{day}:{boat}"` (e.g. `"Sat:3"`)
+- Map `"schedule"` keyed `"{day}:{boat}"` (e.g. `"Sat:3"`)
 - Each value is a Y.Array of member name strings
 
-On solve completion, `_run_job` initializes and persists the Yjs state from the solver result. The browser connects via `WebsocketProvider` from `y-websocket` (imported from esm.sh CDN). "Commit schedule" calls `POST /schedule/{id}/commit` which validates the Yjs doc (no kid on two boats same day) and writes the canonical assignment to `boat_assignment`.
+On solve completion `_run_job` initialises and persists the Yjs state. "Commit schedule" (`POST /schedule/{id}/commit`) validates the doc and writes to `boat_assignment`.
 
-### DB schema additions
+### Authentication
 
-`db.py` has three Yjs-related functions added after the original set (do not move or rename existing functions):
+All non-public routes require a `bsession` session cookie. The server operates in two modes:
 
-- `add_yjs_state_column(conn)` — ALTER TABLE idempotent; called by `create_app`
-- `get_yjs_state(conn, schedule_id)` → bytes | None
-- `set_yjs_state(conn, schedule_id, state)` → None
-- `replace_assignments(conn, schedule_id, assignments)` — DELETE + re-INSERT for commit
+- **Open mode** — no instructor has a password yet. All requests are allowed; `/setup` is accessible to create the first account.
+- **Auth mode** — at least one instructor has a password. All routes require a valid session.
 
-### Public API
+The React SPA uses `POST /api/auth/login` (JSON body) which sets the same `bsession` cookie used by the optimizer.
+
+### Public Python API
 
 ```python
 from boatsched import Config, solve, load_roster
@@ -98,16 +228,29 @@ rows, stats = solve(kids, Config(boats=13))
 # stats: {"mixed": int, "distinct": int, "repeats": int, "status_C": str}
 ```
 
-`on_progress` is an optional `(label, status_name, value) -> None` callback passed to `solve()` for streaming stage results.
+`on_progress` is an optional `(label, status_name, value) -> None` callback for streaming stage results.
 
 ### Error types
 
-- `ValidationError` — roster/config structurally infeasible (bad divisibility, unknown levels, etc.)
+- `ValidationError` — roster/config structurally infeasible
 - `SolveError` — a stage found no solution within its time budget
 - `RosterError` — malformed CSV input
 
-### Constraints: what NOT to modify
+## Constraints: what NOT to modify
 
 - `solver.py`, `roster.py`, `cli.py` — do not change
-- `db._create_tables()` — do not change; migration is handled by `add_yjs_state_column`
-- Existing `db.py` functions — may be extended but not renamed or have signatures changed
+- `db._create_tables()` — do not change; migrations are additive ALTER TABLE calls
+- Existing `db.py` function signatures — may be extended but not renamed or changed
+- `frontend/src/components/ui/` — shadcn/ui components; regenerate with the shadcn CLI rather than editing manually
+
+## Deployment
+
+See `README.md` for full Docker and bare-metal Hetzner instructions.
+
+Quick Docker deploy:
+
+```bash
+docker compose up --build -d
+```
+
+The multi-stage `Dockerfile` compiles the frontend with Node 20 then packages everything into a Python 3.11 image. The database is persisted to the `boatsched_data` named volume at `/data/boatsched.db`.
