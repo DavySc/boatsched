@@ -22,11 +22,15 @@ def _make_instructor(db_conn, name, level="k", password=None):
     return row["id"]
 
 
+def _login(client, name, password):
+    return client.post("/api/auth/login", json={"name": name, "password": password})
+
+
 @pytest.fixture
 def open_client(tmp_path):
     """App with DB, one instructor, but no passwords set (open/bootstrap mode)."""
     db_conn = _db.init_db(str(tmp_path / "open.db"))
-    _make_instructor(db_conn, "OpenUser")  # at least one instructor so / shows viewer
+    _make_instructor(db_conn, "OpenUser")
     app = create_app(CFG, db_conn)
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client, db_conn
@@ -34,7 +38,7 @@ def open_client(tmp_path):
 
 @pytest.fixture
 def empty_client(tmp_path):
-    """App with DB but no instructors at all (triggers /setup redirect)."""
+    """App with DB but no instructors at all (still open/bootstrap mode)."""
     db_conn = _db.init_db(str(tmp_path / "empty.db"))
     app = create_app(CFG, db_conn)
     with TestClient(app, raise_server_exceptions=True) as client:
@@ -65,15 +69,16 @@ class TestOpenMode:
         client, _ = open_client
         assert client.get("/seasons").status_code == 200
 
-    def test_config_always_public(self, open_client):
+    def test_config_accessible_in_open_mode(self, open_client):
         client, _ = open_client
         assert client.get("/config").status_code == 200
 
-    def test_login_page_accessible_in_open_mode(self, open_client):
+    def test_api_login_in_open_mode_accepts_any_credentials(self, open_client):
         client, _ = open_client
-        r = client.get("/login")
+        r = client.post("/api/auth/login", json={"name": "anyone", "password": ""})
         assert r.status_code == 200
-        assert b"Log in" in r.content
+        assert r.json()["ok"] is True
+        assert "bsession" in r.cookies
 
     def test_set_password_in_open_mode(self, open_client):
         client, db_conn = open_client
@@ -89,79 +94,61 @@ class TestOpenMode:
         r = client.post("/set-password", json={"name": "Carol", "password": "pw"})
         assert r.status_code == 404
 
-    def test_login_in_open_mode_redirects_to_root(self, open_client):
-        client, _ = open_client
-        r = client.post("/login", data={"name": "x", "password": "y"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/"
-
 
 # ---------------------------------------------------------------------------
 # Auth mode — at least one password set
 # ---------------------------------------------------------------------------
 
 class TestAuthMode:
-    def test_root_redirects_when_not_logged_in(self, auth_client):
+    def test_root_always_returns_viewer_html(self, auth_client):
+        """/ always returns viewer.html; JS shows login overlay when unauthenticated."""
         client, _ = auth_client
         r = client.get("/", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/login"
+        assert r.status_code == 200
 
     def test_api_returns_401_when_not_logged_in(self, auth_client):
         client, _ = auth_client
         assert client.get("/seasons").status_code == 401
 
-    def test_config_still_public_in_auth_mode(self, auth_client):
+    def test_config_returns_401_when_not_logged_in(self, auth_client):
         client, _ = auth_client
-        assert client.get("/config").status_code == 200
+        assert client.get("/config").status_code == 401
 
-    def test_login_page_accessible_in_auth_mode(self, auth_client):
+    def test_valid_json_login_sets_session_cookie(self, auth_client):
         client, _ = auth_client
-        r = client.get("/login")
+        r = _login(client, "Alice", "secret123")
         assert r.status_code == 200
-
-    def test_valid_login_sets_session_cookie(self, auth_client):
-        client, _ = auth_client
-        r = client.post("/login", data={"name": "Alice", "password": "secret123"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/"
+        assert r.json()["ok"] is True
         assert "bsession" in r.cookies
 
-    def test_invalid_password_redirects_with_error(self, auth_client):
+    def test_invalid_password_returns_401(self, auth_client):
         client, _ = auth_client
-        r = client.post("/login", data={"name": "Alice", "password": "wrong"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert "error=1" in r.headers["location"]
+        r = _login(client, "Alice", "wrong")
+        assert r.status_code == 401
         assert "bsession" not in r.cookies
 
-    def test_wrong_name_redirects_with_error(self, auth_client):
+    def test_wrong_name_returns_401(self, auth_client):
         client, _ = auth_client
-        r = client.post("/login", data={"name": "Nobody", "password": "pw"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert "error=1" in r.headers["location"]
+        r = _login(client, "Nobody", "pw")
+        assert r.status_code == 401
 
     def test_authenticated_root_returns_viewer(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.get("/", follow_redirects=False)
         assert r.status_code == 200
 
     def test_authenticated_api_returns_data(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         assert client.get("/seasons").status_code == 200
 
     def test_logout_clears_session(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
-        assert client.get("/", follow_redirects=False).status_code == 200
-        client.post("/logout")
-        r = client.get("/", follow_redirects=False)
-        assert r.status_code == 303
+        _login(client, "Alice", "secret123")
+        assert client.get("/seasons").status_code == 200
+        client.post("/api/auth/logout")
+        assert client.get("/seasons").status_code == 401
 
     def test_set_password_requires_auth_in_auth_mode(self, auth_client):
         client, db_conn = auth_client
@@ -172,16 +159,10 @@ class TestAuthMode:
     def test_set_password_succeeds_when_authenticated(self, auth_client):
         client, db_conn = auth_client
         _make_instructor(db_conn, "Eve")
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.post("/set-password", json={"name": "Eve", "password": "evepw"})
         assert r.status_code == 200
         assert r.json()["ok"] is True
-
-    def test_login_error_page_shows_error_message(self, auth_client):
-        client, _ = auth_client
-        r = client.get("/login?error=1")
-        assert r.status_code == 200
-        assert b"Incorrect" in r.content
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +182,7 @@ class TestMeEndpoint:
 
     def test_me_returns_name_after_login(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.get("/me")
         assert r.status_code == 200
         assert r.json()["name"] == "Alice"
@@ -226,7 +207,7 @@ class TestCreateInstructor:
 
     def test_create_instructor_authenticated(self, auth_client):
         client, db_conn = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.post("/instructor", json={"name": "Bob", "password": "bobpw"})
         assert r.status_code == 200
         assert r.json()["ok"] is True
@@ -234,8 +215,7 @@ class TestCreateInstructor:
 
     def test_create_instructor_promotes_existing_member(self, auth_client):
         client, db_conn = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
-        # Add a regular member first
+        _login(client, "Alice", "secret123")
         _db.add_or_update_members(db_conn, [("Carol", "k")])
         r = client.post("/instructor", json={"name": "Carol", "password": "carolpw"})
         assert r.status_code == 200
@@ -243,19 +223,19 @@ class TestCreateInstructor:
 
     def test_create_duplicate_instructor_returns_409(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.post("/instructor", json={"name": "Alice", "password": "newpw"})
         assert r.status_code == 409
 
     def test_create_instructor_empty_fields_returns_400(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.post("/instructor", json={"name": "", "password": ""})
         assert r.status_code == 400
 
     def test_new_instructor_appears_in_list(self, auth_client):
         client, _ = auth_client
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         client.post("/instructor", json={"name": "Dave", "password": "davepw"})
         instructors = client.get("/instructors").json()
         names = [i["name"] for i in instructors]
@@ -269,9 +249,8 @@ class TestCreateInstructor:
 class TestInstructorsEndpoint:
     def test_lists_instructors_with_password_status(self, auth_client):
         client, db_conn = auth_client
-        # Alice already has a password (from fixture); add Frank without one
         _make_instructor(db_conn, "Frank")
-        client.post("/login", data={"name": "Alice", "password": "secret123"})
+        _login(client, "Alice", "secret123")
         r = client.get("/instructors")
         assert r.status_code == 200
         data = {i["name"]: i for i in r.json()}
@@ -280,58 +259,65 @@ class TestInstructorsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# First-time setup endpoint
+# First-time setup (empty DB — no instructors)
 # ---------------------------------------------------------------------------
 
-class TestSetupEndpoint:
-    def test_root_redirects_to_setup_when_no_instructors(self, empty_client):
+class TestBootstrapMode:
+    def test_root_accessible_with_no_instructors(self, empty_client):
+        """No instructors means open/bootstrap mode — / should serve the app."""
         client, _ = empty_client
         r = client.get("/", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/setup"
-
-    def test_setup_page_accessible(self, empty_client):
-        client, _ = empty_client
-        r = client.get("/setup")
         assert r.status_code == 200
-        assert b"Create account" in r.content
 
-    def test_setup_creates_instructor_sets_cookie_and_redirects(self, empty_client):
+    def test_api_accessible_in_bootstrap_mode(self, empty_client):
+        client, _ = empty_client
+        assert client.get("/seasons").status_code == 200
+
+    def test_can_create_first_instructor_in_bootstrap_mode(self, empty_client):
         client, db_conn = empty_client
-        r = client.post("/setup", data={"name": "admin", "password": "adminpw"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/"
-        assert "bsession" in r.cookies
+        r = client.post("/instructor", json={"name": "admin", "password": "adminpw"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
         assert _db.verify_instructor_login(db_conn, "admin", "adminpw") is not None
 
-    def test_setup_activates_auth_mode(self, empty_client):
+    def test_after_first_instructor_api_login_works(self, empty_client):
         client, _ = empty_client
-        client.post("/setup", data={"name": "admin", "password": "pw"})
-        client.post("/logout")
-        r = client.get("/", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/login"
-
-    def test_setup_inaccessible_once_account_exists(self, empty_client):
-        client, _ = empty_client
-        client.post("/setup", data={"name": "admin", "password": "pw"})
-        r = client.get("/setup", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/login"
-
-    def test_setup_empty_fields_redirects_with_error(self, empty_client):
-        client, _ = empty_client
-        r = client.post("/setup", data={"name": "", "password": ""},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert "error=1" in r.headers["location"]
-
-    def test_setup_error_page_shows_message(self, empty_client):
-        client, _ = empty_client
-        r = client.get("/setup?error=1")
+        client.post("/instructor", json={"name": "admin", "password": "adminpw"})
+        r = _login(client, "admin", "adminpw")
         assert r.status_code == 200
-        assert b"required" in r.content
+        assert "bsession" in r.cookies
+
+
+# ---------------------------------------------------------------------------
+# JSON auth endpoints (/api/auth/*)
+# ---------------------------------------------------------------------------
+
+class TestApiAuth:
+    def test_api_me_returns_401_when_not_authenticated(self, auth_client):
+        client, _ = auth_client
+        r = client.get("/api/auth/me")
+        assert r.status_code == 401
+
+    def test_api_me_returns_user_after_login(self, auth_client):
+        client, _ = auth_client
+        _login(client, "Alice", "secret123")
+        r = client.get("/api/auth/me")
+        assert r.status_code == 200
+        assert r.json()["name"] == "Alice"
+
+    def test_api_login_returns_ok_and_cookie(self, auth_client):
+        client, _ = auth_client
+        r = client.post("/api/auth/login", json={"name": "Alice", "password": "secret123"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert "bsession" in r.cookies
+
+    def test_api_logout_clears_session(self, auth_client):
+        client, _ = auth_client
+        _login(client, "Alice", "secret123")
+        assert client.get("/api/auth/me").status_code == 200
+        client.post("/api/auth/logout")
+        assert client.get("/api/auth/me").status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +334,9 @@ class TestPasswordHashing:
         ).fetchone()
         ph = bytes(row["password_hash"])
         ps = bytes(row["password_salt"])
-        assert b"plaintextpw" not in ph  # hash is opaque binary
-        assert len(ph) == 64             # scrypt default dklen
-        assert len(ps) == 32             # 32-byte random salt
+        assert b"plaintextpw" not in ph
+        assert len(ph) == 64
+        assert len(ps) == 32
 
     def test_wrong_password_returns_none(self, open_client):
         _, db_conn = open_client
@@ -374,4 +360,4 @@ class TestPasswordHashing:
                              (mid1,)).fetchone()["password_hash"]
         h2 = db_conn.execute("SELECT password_hash FROM instructor WHERE member_id=?",
                              (mid2,)).fetchone()["password_hash"]
-        assert h1 != h2  # different salts → different hashes
+        assert h1 != h2

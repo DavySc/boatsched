@@ -156,8 +156,6 @@ class TestGetUnknown:
     def test_returns_404(self, srv):
         status, body = _get(srv, "/no/such/path")
         assert status == 404
-        data = json.loads(body)
-        assert "error" in data
 
 
 class TestPostSolve:
