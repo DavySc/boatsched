@@ -1,0 +1,20 @@
+[Unit]
+Description=Boatsched sailing camp scheduler
+After=network.target
+
+[Service]
+Type=simple
+User=boatsched
+WorkingDirectory=/opt/boatsched
+ExecStart=/opt/boatsched/.venv/bin/boatsched-server --db /var/lib/boatsched/boatsched.db --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5s
+
+# Protect system
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/boatsched
+
+[Install]
+WantedBy=multi-user.target
