@@ -154,11 +154,13 @@ def _parse_message(buf: bytes):
 def create_app(cfg: Config, db_conn=None) -> FastAPI:
     app = FastAPI(title="boatsched")
 
-    # Run DB column migrations once on startup
+    # Run DB migrations once on startup
     if db_conn is not None:
         _db.add_yjs_state_column(db_conn)
         _db.add_start_date_column(db_conn)
-        _db.add_camp_tables(db_conn)
+        _db.add_enrollment_tables(db_conn)
+        _db.drop_member_level_column(db_conn)
+        _db.drop_legacy_camp_tables(db_conn)
 
     # Per-schedule Yjs docs and connected WebSocket sets (app-scoped state)
     docs: dict[int, pycrdt.Doc] = {}
@@ -277,7 +279,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
                 "SELECT id FROM member WHERE name=?", (name,)
             ).fetchone()
             member_id = row["id"] if row else db_conn.execute(
-                "INSERT INTO member (name, level) VALUES (?, NULL)", (name,)
+                "INSERT INTO member (name) VALUES (?)", (name,)
             ).lastrowid
             already = db_conn.execute(
                 "SELECT 1 FROM instructor WHERE member_id=?", (member_id,)
@@ -414,7 +416,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=400)
         if db_conn is not None:
             try:
-                await asyncio.to_thread(_db.add_or_update_members, db_conn, kids)
+                sid = int(season_id) if season_id else None
+                await asyncio.to_thread(_db.add_or_update_members, db_conn, kids, sid)
             except Exception as e:
                 return JSONResponse({"error": f"db error: {e}"}, status_code=500)
         jid = uuid.uuid4().hex[:12]
@@ -644,134 +647,6 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     @app.get("/api/health")
     async def api_health():
         return {"status": "healthy", "timestamp": __import__("datetime").datetime.utcnow().isoformat(), "version": "1.0"}
-
-    # -----------------------------------------------------------------------
-    # API: students (camp members for the evaluation tracker)
-    # -----------------------------------------------------------------------
-
-    @app.get("/api/students")
-    async def api_get_students():
-        if db_conn is None:
-            return {"students": []}
-        students = await asyncio.to_thread(_db.list_students, db_conn)
-        return {"students": students}
-
-    @app.post("/api/students")
-    async def api_save_students(request: Request):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        try:
-            body = await request.json()
-            students = body.get("students", [])
-            if not isinstance(students, list):
-                return JSONResponse({"error": "students must be an array"}, status_code=400)
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        result = await asyncio.to_thread(_db.save_students, db_conn, students)
-        return {"students": result}
-
-    @app.put("/api/students/{student_id}")
-    async def api_update_student(student_id: str, request: Request):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        try:
-            data = await request.json()
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        if not student_id.isdigit():
-            return JSONResponse({"error": "invalid id"}, status_code=400)
-        student = await asyncio.to_thread(
-            _db.update_student, db_conn, int(student_id), data)
-        if student is None:
-            return JSONResponse({"error": "not found"}, status_code=404)
-        return {"student": student}
-
-    @app.delete("/api/students/{student_id}")
-    async def api_delete_student(student_id: str):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        if not student_id.isdigit():
-            return JSONResponse({"error": "invalid id"}, status_code=400)
-        await asyncio.to_thread(_db.delete_student, db_conn, int(student_id))
-        return {"ok": True}
-
-    # -----------------------------------------------------------------------
-    # API: progress records
-    # -----------------------------------------------------------------------
-
-    @app.get("/api/progress")
-    async def api_get_all_progress():
-        if db_conn is None:
-            return {"progressData": []}
-        data = await asyncio.to_thread(_db.get_all_progress, db_conn)
-        return {"progressData": data}
-
-    @app.get("/api/progress/{student_id}")
-    async def api_get_progress(student_id: str):
-        if db_conn is None:
-            return {"progress": None}
-        data = await asyncio.to_thread(_db.get_progress, db_conn, student_id)
-        return {"progress": data}
-
-    @app.post("/api/progress")
-    async def api_save_progress(request: Request):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        try:
-            progress = await request.json()
-            if not progress.get("studentId"):
-                return JSONResponse({"error": "studentId required"}, status_code=400)
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        result = await asyncio.to_thread(_db.save_progress, db_conn, progress)
-        return {"progress": result}
-
-    @app.delete("/api/progress/{student_id}")
-    async def api_delete_progress(student_id: str):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        await asyncio.to_thread(_db.delete_progress, db_conn, student_id)
-        return {"ok": True}
-
-    # -----------------------------------------------------------------------
-    # API: day allocations (manual boat tables from the React UI)
-    # -----------------------------------------------------------------------
-
-    @app.get("/api/boat-allocations")
-    async def api_get_all_allocations():
-        if db_conn is None:
-            return {"boatAllocations": []}
-        data = await asyncio.to_thread(_db.get_all_day_allocations, db_conn)
-        return {"boatAllocations": data}
-
-    @app.get("/api/boat-allocations/{day}")
-    async def api_get_allocation(day: str):
-        if db_conn is None:
-            return {"allocation": None}
-        decoded = __import__("urllib.parse", fromlist=["unquote"]).unquote(day)
-        data = await asyncio.to_thread(_db.get_day_allocation, db_conn, decoded)
-        return {"allocation": data}
-
-    @app.post("/api/boat-allocations")
-    async def api_save_allocation(request: Request):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        try:
-            allocation = await request.json()
-            if not allocation.get("day"):
-                return JSONResponse({"error": "day required"}, status_code=400)
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        result = await asyncio.to_thread(_db.save_day_allocation, db_conn, allocation)
-        return {"allocation": result}
-
-    @app.delete("/api/boat-allocations/{day}")
-    async def api_delete_allocation(day: str):
-        if db_conn is None:
-            return JSONResponse({"error": "no database"}, status_code=503)
-        decoded = __import__("urllib.parse", fromlist=["unquote"]).unquote(day)
-        await asyncio.to_thread(_db.delete_day_allocation, db_conn, decoded)
-        return {"ok": True}
 
     return app
 

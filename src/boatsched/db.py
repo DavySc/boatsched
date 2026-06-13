@@ -1,5 +1,6 @@
 """Database connection and schema initialization."""
 import hashlib as _hashlib
+import json as _json
 import secrets as _secrets
 import sqlite3
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 
 def get_connection(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row      # rows behave like dicts
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -19,27 +20,267 @@ def init_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def add_or_update_members(conn: sqlite3.Connection, members: list) -> None:
-    """Upsert (name, level) pairs into the member table, then verify each row."""
+def _create_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS member (
+            id      INTEGER PRIMARY KEY,
+            name    TEXT NOT NULL,
+            active  BOOLEAN NOT NULL DEFAULT 1,
+            joined  DATE NOT NULL DEFAULT (date('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS instructor (
+            instructor_id INTEGER PRIMARY KEY,
+            member_id     INTEGER NOT NULL UNIQUE REFERENCES member(id),
+            password_hash BLOB,
+            password_salt BLOB
+        );
+
+        CREATE TABLE IF NOT EXISTS season (
+            id   INTEGER PRIMARY KEY,
+            year INTEGER NOT NULL UNIQUE
+        );
+
+        CREATE TABLE IF NOT EXISTS schedule (
+            id         INTEGER PRIMARY KEY,
+            season_id  INTEGER NOT NULL REFERENCES season(id),
+            created    TIMESTAMP DEFAULT (datetime('now')),
+            start_date DATE,
+            config     TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS boat (
+            boat_id INTEGER PRIMARY KEY,
+            name    TEXT,
+            notes   TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS boat_assignment (
+            id          INTEGER PRIMARY KEY,
+            schedule_id INTEGER NOT NULL REFERENCES schedule(id),
+            member_id   INTEGER NOT NULL REFERENCES member(id),
+            boat_id     INTEGER NOT NULL REFERENCES boat(boat_id),
+            day         TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS enrollment (
+            member_id INTEGER NOT NULL REFERENCES member(id),
+            season_id INTEGER NOT NULL REFERENCES season(id),
+            level     TEXT NOT NULL CHECK (level IN ('k','b','A','B')),
+            PRIMARY KEY (member_id, season_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS skill (
+            id      INTEGER PRIMARY KEY,
+            level   TEXT NOT NULL CHECK (level IN ('k','b','A','B')),
+            code    TEXT NOT NULL,
+            label   TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            retired BOOLEAN NOT NULL DEFAULT 0,
+            UNIQUE (level, code)
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_result (
+            member_id INTEGER NOT NULL,
+            season_id INTEGER NOT NULL,
+            skill_id  INTEGER NOT NULL REFERENCES skill(id),
+            status    TEXT NOT NULL,
+            note      TEXT,
+            PRIMARY KEY (member_id, season_id, skill_id),
+            FOREIGN KEY (member_id, season_id)
+                REFERENCES enrollment(member_id, season_id)
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_member_per_boat_assignment
+            ON boat_assignment(schedule_id, member_id, day);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_name ON member(name);
+
+        CREATE INDEX IF NOT EXISTS ix_enrollment_season ON enrollment(season_id);
+
+        CREATE VIEW IF NOT EXISTS v_level_card AS
+        SELECT e.member_id, e.season_id, se.year AS season_year,
+               m.name AS member_name, e.level,
+               sk.id AS skill_id, sk.code AS skill_code, sk.label AS skill_label,
+               sk.ordinal, sr.status, sr.note
+        FROM enrollment e
+        JOIN member m  ON m.id  = e.member_id
+        JOIN season se ON se.id = e.season_id
+        JOIN skill  sk ON sk.level = e.level AND sk.retired = 0
+        LEFT JOIN skill_result sr
+               ON sr.member_id = e.member_id
+              AND sr.season_id = e.season_id
+              AND sr.skill_id  = sk.id;
+    """)
     conn.executemany(
-        "INSERT INTO member (name, level) VALUES (?, ?)"
-        " ON CONFLICT(name) DO UPDATE SET level = excluded.level"
-        " WHERE name = excluded.name",
-        members,
+        "INSERT OR IGNORE INTO boat (boat_id) VALUES (?)",
+        [(i,) for i in range(1, 14)],
     )
     conn.commit()
 
-    for name, level in members:
-        row = conn.execute(
-            "SELECT level FROM member WHERE name = ?", (name,)
-        ).fetchone()
-        if row is None:
-            raise RuntimeError(f"member '{name}' not found after upsert")
-        if row["level"] != level:
-            raise RuntimeError(
-                f"member '{name}': expected level '{level}', got '{row['level']}' after upsert"
-            )
 
+# ---------------------------------------------------------------------------
+# Idempotent migrations (called at server startup for existing databases)
+# ---------------------------------------------------------------------------
+
+def add_yjs_state_column(conn: sqlite3.Connection) -> None:
+    """Add yjs_state BLOB to schedule table (idempotent)."""
+    try:
+        conn.execute("ALTER TABLE schedule ADD COLUMN yjs_state BLOB")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def add_start_date_column(conn: sqlite3.Connection) -> None:
+    """Add start_date DATE to schedule table (idempotent)."""
+    try:
+        conn.execute("ALTER TABLE schedule ADD COLUMN start_date DATE")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def add_enrollment_tables(conn: sqlite3.Connection) -> None:
+    """Create enrollment, skill, skill_result, index, and view (idempotent)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS enrollment (
+            member_id INTEGER NOT NULL REFERENCES member(id),
+            season_id INTEGER NOT NULL REFERENCES season(id),
+            level     TEXT NOT NULL CHECK (level IN ('k','b','A','B')),
+            PRIMARY KEY (member_id, season_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS skill (
+            id      INTEGER PRIMARY KEY,
+            level   TEXT NOT NULL CHECK (level IN ('k','b','A','B')),
+            code    TEXT NOT NULL,
+            label   TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            retired BOOLEAN NOT NULL DEFAULT 0,
+            UNIQUE (level, code)
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_result (
+            member_id INTEGER NOT NULL,
+            season_id INTEGER NOT NULL,
+            skill_id  INTEGER NOT NULL REFERENCES skill(id),
+            status    TEXT NOT NULL,
+            note      TEXT,
+            PRIMARY KEY (member_id, season_id, skill_id),
+            FOREIGN KEY (member_id, season_id)
+                REFERENCES enrollment(member_id, season_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_enrollment_season ON enrollment(season_id);
+
+        CREATE VIEW IF NOT EXISTS v_level_card AS
+        SELECT e.member_id, e.season_id, se.year AS season_year,
+               m.name AS member_name, e.level,
+               sk.id AS skill_id, sk.code AS skill_code, sk.label AS skill_label,
+               sk.ordinal, sr.status, sr.note
+        FROM enrollment e
+        JOIN member m  ON m.id  = e.member_id
+        JOIN season se ON se.id = e.season_id
+        JOIN skill  sk ON sk.level = e.level AND sk.retired = 0
+        LEFT JOIN skill_result sr
+               ON sr.member_id = e.member_id
+              AND sr.season_id = e.season_id
+              AND sr.skill_id  = sk.id;
+    """)
+    conn.commit()
+
+
+def drop_member_level_column(conn: sqlite3.Connection) -> None:
+    """Remove member.level — level is now per-season in enrollment. Idempotent."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(member)")}
+    if "level" not in cols:
+        return
+    ver = tuple(
+        int(x) for x in
+        conn.execute("SELECT sqlite_version()").fetchone()[0].split(".")
+    )
+    if ver >= (3, 35, 0):
+        conn.execute("ALTER TABLE member DROP COLUMN level")
+        conn.commit()
+    else:
+        # SQLite < 3.35 cannot drop columns; the unused column is harmless
+        # since no code reads it anymore.
+        pass
+
+
+def drop_legacy_camp_tables(conn: sqlite3.Connection) -> None:
+    """Drop progress_record and day_allocation (no data to preserve). Idempotent."""
+    conn.executescript("""
+        DROP TABLE IF EXISTS progress_record;
+        DROP TABLE IF EXISTS day_allocation;
+    """)
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Member / enrollment helpers
+# ---------------------------------------------------------------------------
+
+def add_or_update_members(conn: sqlite3.Connection, members: list,
+                          season_id=None) -> None:
+    """Upsert member names; if season_id given, also upsert enrollment levels.
+
+    members: list of (name, level) tuples.
+    season_id: if provided, creates/updates an enrollment row for each member
+               in that season with the corresponding level.
+    """
+    # Insert members by name only — level no longer lives on member.
+    conn.executemany(
+        "INSERT INTO member (name) VALUES (?)"
+        " ON CONFLICT(name) DO NOTHING",
+        [(name,) for name, _ in members],
+    )
+    conn.commit()
+
+    if season_id is not None:
+        for name, level in members:
+            row = conn.execute(
+                "SELECT id FROM member WHERE name = ?", (name,)
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(f"member '{name}' not found after upsert")
+            conn.execute(
+                "INSERT INTO enrollment (member_id, season_id, level)"
+                " VALUES (?, ?, ?)"
+                " ON CONFLICT(member_id, season_id) DO UPDATE SET level = excluded.level",
+                (row["id"], season_id, level),
+            )
+        conn.commit()
+
+
+def add_enrollment(conn: sqlite3.Connection, member_id: int,
+                   season_id: int, level: str) -> None:
+    """Upsert a single enrollment row."""
+    conn.execute(
+        "INSERT INTO enrollment (member_id, season_id, level) VALUES (?, ?, ?)"
+        " ON CONFLICT(member_id, season_id) DO UPDATE SET level = excluded.level",
+        (member_id, season_id, level),
+    )
+    conn.commit()
+
+
+def get_season_roster(conn: sqlite3.Connection, season_id: int) -> list:
+    """Return [(name, level)] for active members enrolled in season_id."""
+    rows = conn.execute(
+        "SELECT m.name, e.level"
+        " FROM enrollment e"
+        " JOIN member m ON m.id = e.member_id"
+        " WHERE e.season_id = ? AND m.active = 1"
+        " ORDER BY m.name",
+        (season_id,),
+    ).fetchall()
+    return [(r["name"], r["level"]) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Season / schedule helpers
+# ---------------------------------------------------------------------------
 
 def create_season(conn: sqlite3.Connection, year: int) -> int:
     cur = conn.execute("INSERT INTO season (year) VALUES (?)", (year,))
@@ -84,14 +325,30 @@ def list_schedules(conn: sqlite3.Connection, season_id: int) -> list:
 
 
 def get_schedule(conn: sqlite3.Connection, schedule_id: int) -> list:
+    """Return schedule rows; raises RuntimeError if any member lacks enrollment."""
     rows = conn.execute(
-        "SELECT ba.day, ba.boat_id AS boat, m.name, m.level"
+        "SELECT ba.day, ba.boat_id AS boat, m.name, e.level"
         " FROM boat_assignment ba"
         " JOIN member m ON m.id = ba.member_id"
+        " JOIN schedule s ON s.id = ba.schedule_id"
+        " LEFT JOIN enrollment e"
+        "   ON e.member_id = m.id AND e.season_id = s.season_id"
         " WHERE ba.schedule_id = ?"
         " ORDER BY ba.day, ba.boat_id, m.name",
         (schedule_id,),
     ).fetchall()
+
+    missing = [r["name"] for r in rows if r["level"] is None]
+    if missing:
+        season_row = conn.execute(
+            "SELECT season_id FROM schedule WHERE id=?", (schedule_id,)
+        ).fetchone()
+        season_id = season_row["season_id"] if season_row else "unknown"
+        names = ", ".join(sorted(set(missing)))
+        raise RuntimeError(
+            f"members not enrolled in season {season_id}: {names}"
+        )
+
     return [dict(r) for r in rows]
 
 
@@ -117,6 +374,10 @@ def swap_assignment(conn: sqlite3.Connection, schedule_id: int,
     conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# Boat helpers
+# ---------------------------------------------------------------------------
+
 def list_boats(conn: sqlite3.Connection) -> list:
     return [dict(r) for r in conn.execute(
         "SELECT boat_id AS id, name FROM boat ORDER BY boat_id"
@@ -128,8 +389,11 @@ def rename_boat(conn: sqlite3.Connection, boat_id: int, name) -> None:
     conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# Instructor / auth helpers
+# ---------------------------------------------------------------------------
+
 def set_instructor_password(conn: sqlite3.Connection, member_id: int, password: str) -> None:
-    """Hash and store a scrypt password for an instructor (binary BLOB columns)."""
     salt = _secrets.token_bytes(32)
     dk = _hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
     conn.execute(
@@ -140,7 +404,6 @@ def set_instructor_password(conn: sqlite3.Connection, member_id: int, password: 
 
 
 def verify_instructor_login(conn: sqlite3.Connection, name: str, password: str):
-    """Return member_id if (name, password) matches an instructor, else None."""
     row = conn.execute(
         "SELECT i.member_id, i.password_hash, i.password_salt"
         " FROM instructor i JOIN member m ON m.id = i.member_id"
@@ -158,7 +421,6 @@ def verify_instructor_login(conn: sqlite3.Connection, name: str, password: str):
 
 
 def list_instructors(conn: sqlite3.Connection) -> list:
-    """List instructors with name and whether they have a password."""
     return [dict(r) for r in conn.execute(
         "SELECT i.member_id AS id, m.name,"
         " (i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL) AS has_password"
@@ -167,26 +429,11 @@ def list_instructors(conn: sqlite3.Connection) -> list:
     )]
 
 
-def add_yjs_state_column(conn: sqlite3.Connection) -> None:
-    """Add yjs_state BLOB to schedule table (idempotent)."""
-    try:
-        conn.execute("ALTER TABLE schedule ADD COLUMN yjs_state BLOB")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
-
-
-def add_start_date_column(conn: sqlite3.Connection) -> None:
-    """Add start_date DATE to schedule table (idempotent)."""
-    try:
-        conn.execute("ALTER TABLE schedule ADD COLUMN start_date DATE")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
-
+# ---------------------------------------------------------------------------
+# Yjs / schedule state helpers
+# ---------------------------------------------------------------------------
 
 def get_yjs_state(conn: sqlite3.Connection, schedule_id: int):
-    """Return persisted Yjs binary state for a schedule, or None."""
     row = conn.execute(
         "SELECT yjs_state FROM schedule WHERE id=?", (schedule_id,)
     ).fetchone()
@@ -196,13 +443,11 @@ def get_yjs_state(conn: sqlite3.Connection, schedule_id: int):
 
 
 def set_yjs_state(conn: sqlite3.Connection, schedule_id: int, state: bytes) -> None:
-    """Persist Yjs binary state for a schedule."""
     conn.execute("UPDATE schedule SET yjs_state=? WHERE id=?", (state, schedule_id))
     conn.commit()
 
 
 def get_schedule_start_date(conn: sqlite3.Connection, schedule_id: int):
-    """Return the start_date ISO string for a schedule, or None."""
     row = conn.execute(
         "SELECT start_date FROM schedule WHERE id=?", (schedule_id,)
     ).fetchone()
@@ -212,168 +457,17 @@ def get_schedule_start_date(conn: sqlite3.Connection, schedule_id: int):
 def set_schedule_start_date(
     conn: sqlite3.Connection, schedule_id: int, date_str
 ) -> None:
-    """Set (or clear) the start_date for a schedule."""
     conn.execute(
         "UPDATE schedule SET start_date=? WHERE id=?", (date_str, schedule_id)
     )
     conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# Camp student / progress / day-allocation (new frontend data)
-# ---------------------------------------------------------------------------
-
-_LEVEL_TO_NUM = {'k': 1, 'b': 2, 'A': 3, 'B': 4}
-_NUM_TO_LEVEL = {1: 'k', 2: 'b', 3: 'A', 4: 'B'}
-
-
-def add_camp_tables(conn: sqlite3.Connection) -> None:
-    """Add tables for camp evaluation tracking (idempotent)."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS progress_record (
-            student_id TEXT NOT NULL PRIMARY KEY,
-            data_json  TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS day_allocation (
-            day       TEXT NOT NULL PRIMARY KEY,
-            data_json TEXT NOT NULL
-        );
-    """)
-    conn.commit()
-
-
-def _member_to_student(row) -> dict:
-    return {
-        "id": str(row["id"]),
-        "firstName": row["name"],
-        "level": _LEVEL_TO_NUM.get(row["level"], 1) if row["level"] else 1,
-    }
-
-
-def list_students(conn: sqlite3.Connection) -> list:
-    rows = conn.execute(
-        "SELECT id, name, level FROM member WHERE active=1 ORDER BY name"
-    ).fetchall()
-    return [_member_to_student(r) for r in rows]
-
-
-def save_students(conn: sqlite3.Connection, students: list) -> list:
-    """Upsert students; return updated list with server-assigned IDs."""
-    result = []
-    for s in students:
-        level_str = _NUM_TO_LEVEL.get(int(s.get("level", 1)), 'k')
-        name = str(s.get("firstName") or "").strip()
-        if not name:
-            continue
-        existing_id = s.get("id")
-        if existing_id and str(existing_id).isdigit():
-            conn.execute(
-                "UPDATE member SET name=?, level=? WHERE id=?",
-                (name, level_str, int(existing_id)),
-            )
-            row = conn.execute("SELECT id, name, level FROM member WHERE id=?",
-                               (int(existing_id),)).fetchone()
-        else:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO member (name, level) VALUES (?, ?)",
-                (name, level_str),
-            )
-            if cur.rowcount == 0:
-                conn.execute("UPDATE member SET level=? WHERE name=?",
-                             (level_str, name))
-            row = conn.execute("SELECT id, name, level FROM member WHERE name=?",
-                               (name,)).fetchone()
-        if row:
-            result.append(_member_to_student(row))
-    conn.commit()
-    return result
-
-
-def update_student(conn: sqlite3.Connection, student_id: int,
-                   data: dict) -> dict | None:
-    level_str = _NUM_TO_LEVEL.get(int(data.get("level", 1)), 'k') if "level" in data else None
-    name = str(data.get("firstName") or "").strip() if "firstName" in data else None
-    if name:
-        conn.execute("UPDATE member SET name=? WHERE id=?", (name, student_id))
-    if level_str:
-        conn.execute("UPDATE member SET level=? WHERE id=?", (level_str, student_id))
-    conn.commit()
-    row = conn.execute("SELECT id, name, level FROM member WHERE id=?",
-                       (student_id,)).fetchone()
-    return _member_to_student(row) if row else None
-
-
-def delete_student(conn: sqlite3.Connection, student_id: int) -> None:
-    conn.execute("UPDATE member SET active=0 WHERE id=?", (student_id,))
-    conn.commit()
-
-
-def get_all_progress(conn: sqlite3.Connection) -> list:
-    rows = conn.execute("SELECT data_json FROM progress_record").fetchall()
-    import json
-    return [json.loads(r["data_json"]) for r in rows]
-
-
-def get_progress(conn: sqlite3.Connection, student_id: str) -> dict | None:
-    row = conn.execute(
-        "SELECT data_json FROM progress_record WHERE student_id=?", (student_id,)
-    ).fetchone()
-    import json
-    return json.loads(row["data_json"]) if row else None
-
-
-def save_progress(conn: sqlite3.Connection, progress: dict) -> dict:
-    import json
-    student_id = str(progress["studentId"])
-    conn.execute(
-        "INSERT OR REPLACE INTO progress_record (student_id, data_json) VALUES (?, ?)",
-        (student_id, json.dumps(progress)),
-    )
-    conn.commit()
-    return progress
-
-
-def delete_progress(conn: sqlite3.Connection, student_id: str) -> None:
-    conn.execute("DELETE FROM progress_record WHERE student_id=?", (student_id,))
-    conn.commit()
-
-
-def get_all_day_allocations(conn: sqlite3.Connection) -> list:
-    rows = conn.execute("SELECT data_json FROM day_allocation").fetchall()
-    import json
-    return [json.loads(r["data_json"]) for r in rows]
-
-
-def get_day_allocation(conn: sqlite3.Connection, day: str) -> dict | None:
-    row = conn.execute(
-        "SELECT data_json FROM day_allocation WHERE day=?", (day,)
-    ).fetchone()
-    import json
-    return json.loads(row["data_json"]) if row else None
-
-
-def save_day_allocation(conn: sqlite3.Connection, allocation: dict) -> dict:
-    import json
-    day = str(allocation["day"])
-    conn.execute(
-        "INSERT OR REPLACE INTO day_allocation (day, data_json) VALUES (?, ?)",
-        (day, json.dumps(allocation)),
-    )
-    conn.commit()
-    return allocation
-
-
-def delete_day_allocation(conn: sqlite3.Connection, day: str) -> None:
-    conn.execute("DELETE FROM day_allocation WHERE day=?", (day,))
-    conn.commit()
-
-
 def replace_assignments(conn: sqlite3.Connection, schedule_id: int,
                         assignments: list) -> None:
-    """Replace all boat_assignments for a schedule from Yjs commit.
+    """Replace all boat_assignments for a schedule from a Yjs commit.
 
     assignments: list of (name, day, boat_id) tuples.
-    Raises RuntimeError if a member name is not found in the member table.
     """
     conn.execute("DELETE FROM boat_assignment WHERE schedule_id=?", (schedule_id,))
     rows = []
@@ -389,61 +483,5 @@ def replace_assignments(conn: sqlite3.Connection, schedule_id: int,
         "INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day)"
         " VALUES (?, ?, ?, ?)",
         rows,
-    )
-    conn.commit()
-
-
-def _create_tables(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS member (
-            id      INTEGER PRIMARY KEY,
-            name    TEXT NOT NULL,
-            level   TEXT CHECK(level IN ('k','b','A','B')),
-            active  BOOLEAN NOT NULL DEFAULT 1,
-            joined  DATE NOT NULL DEFAULT (date('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS instructor (
-            instructor_id INTEGER PRIMARY KEY,
-            member_id     INTEGER NOT NULL UNIQUE REFERENCES member(id),
-            password_hash BLOB,
-            password_salt BLOB
-        );
-
-        CREATE TABLE IF NOT EXISTS season (
-            id   INTEGER PRIMARY KEY,
-            year INTEGER NOT NULL UNIQUE
-        );
-
-        CREATE TABLE IF NOT EXISTS schedule (
-            id         INTEGER PRIMARY KEY,
-            season_id  INTEGER NOT NULL REFERENCES season(id),
-            created    TIMESTAMP DEFAULT (datetime('now')),
-            start_date DATE,
-            config     TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS boat (
-            boat_id INTEGER PRIMARY KEY,
-            name    TEXT,
-            notes   TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS boat_assignment (
-            id          INTEGER PRIMARY KEY,
-            schedule_id INTEGER NOT NULL REFERENCES schedule(id),
-            member_id   INTEGER NOT NULL REFERENCES member(id),
-            boat_id     INTEGER NOT NULL REFERENCES boat(boat_id),
-            day         TEXT NOT NULL
-        );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_member_per_boat_assignment
-            ON boat_assignment(schedule_id, member_id, day);
-
-        CREATE UNIQUE INDEX IF NOT EXISTS ix_unique_name ON member(name);
-    """)
-    conn.executemany(
-        "INSERT OR IGNORE INTO boat (boat_id) VALUES (?)",
-        [(i,) for i in range(1, 14)],
     )
     conn.commit()
