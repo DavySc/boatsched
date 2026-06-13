@@ -219,6 +219,155 @@ def set_schedule_start_date(
     conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# Camp student / progress / day-allocation (new frontend data)
+# ---------------------------------------------------------------------------
+
+_LEVEL_TO_NUM = {'k': 1, 'b': 2, 'A': 3, 'B': 4}
+_NUM_TO_LEVEL = {1: 'k', 2: 'b', 3: 'A', 4: 'B'}
+
+
+def add_camp_tables(conn: sqlite3.Connection) -> None:
+    """Add tables for camp evaluation tracking (idempotent)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS progress_record (
+            student_id TEXT NOT NULL PRIMARY KEY,
+            data_json  TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS day_allocation (
+            day       TEXT NOT NULL PRIMARY KEY,
+            data_json TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+
+
+def _member_to_student(row) -> dict:
+    return {
+        "id": str(row["id"]),
+        "firstName": row["name"],
+        "level": _LEVEL_TO_NUM.get(row["level"], 1) if row["level"] else 1,
+    }
+
+
+def list_students(conn: sqlite3.Connection) -> list:
+    rows = conn.execute(
+        "SELECT id, name, level FROM member WHERE active=1 ORDER BY name"
+    ).fetchall()
+    return [_member_to_student(r) for r in rows]
+
+
+def save_students(conn: sqlite3.Connection, students: list) -> list:
+    """Upsert students; return updated list with server-assigned IDs."""
+    result = []
+    for s in students:
+        level_str = _NUM_TO_LEVEL.get(int(s.get("level", 1)), 'k')
+        name = str(s.get("firstName") or "").strip()
+        if not name:
+            continue
+        existing_id = s.get("id")
+        if existing_id and str(existing_id).isdigit():
+            conn.execute(
+                "UPDATE member SET name=?, level=? WHERE id=?",
+                (name, level_str, int(existing_id)),
+            )
+            row = conn.execute("SELECT id, name, level FROM member WHERE id=?",
+                               (int(existing_id),)).fetchone()
+        else:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO member (name, level) VALUES (?, ?)",
+                (name, level_str),
+            )
+            if cur.rowcount == 0:
+                conn.execute("UPDATE member SET level=? WHERE name=?",
+                             (level_str, name))
+            row = conn.execute("SELECT id, name, level FROM member WHERE name=?",
+                               (name,)).fetchone()
+        if row:
+            result.append(_member_to_student(row))
+    conn.commit()
+    return result
+
+
+def update_student(conn: sqlite3.Connection, student_id: int,
+                   data: dict) -> dict | None:
+    level_str = _NUM_TO_LEVEL.get(int(data.get("level", 1)), 'k') if "level" in data else None
+    name = str(data.get("firstName") or "").strip() if "firstName" in data else None
+    if name:
+        conn.execute("UPDATE member SET name=? WHERE id=?", (name, student_id))
+    if level_str:
+        conn.execute("UPDATE member SET level=? WHERE id=?", (level_str, student_id))
+    conn.commit()
+    row = conn.execute("SELECT id, name, level FROM member WHERE id=?",
+                       (student_id,)).fetchone()
+    return _member_to_student(row) if row else None
+
+
+def delete_student(conn: sqlite3.Connection, student_id: int) -> None:
+    conn.execute("UPDATE member SET active=0 WHERE id=?", (student_id,))
+    conn.commit()
+
+
+def get_all_progress(conn: sqlite3.Connection) -> list:
+    rows = conn.execute("SELECT data_json FROM progress_record").fetchall()
+    import json
+    return [json.loads(r["data_json"]) for r in rows]
+
+
+def get_progress(conn: sqlite3.Connection, student_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT data_json FROM progress_record WHERE student_id=?", (student_id,)
+    ).fetchone()
+    import json
+    return json.loads(row["data_json"]) if row else None
+
+
+def save_progress(conn: sqlite3.Connection, progress: dict) -> dict:
+    import json
+    student_id = str(progress["studentId"])
+    conn.execute(
+        "INSERT OR REPLACE INTO progress_record (student_id, data_json) VALUES (?, ?)",
+        (student_id, json.dumps(progress)),
+    )
+    conn.commit()
+    return progress
+
+
+def delete_progress(conn: sqlite3.Connection, student_id: str) -> None:
+    conn.execute("DELETE FROM progress_record WHERE student_id=?", (student_id,))
+    conn.commit()
+
+
+def get_all_day_allocations(conn: sqlite3.Connection) -> list:
+    rows = conn.execute("SELECT data_json FROM day_allocation").fetchall()
+    import json
+    return [json.loads(r["data_json"]) for r in rows]
+
+
+def get_day_allocation(conn: sqlite3.Connection, day: str) -> dict | None:
+    row = conn.execute(
+        "SELECT data_json FROM day_allocation WHERE day=?", (day,)
+    ).fetchone()
+    import json
+    return json.loads(row["data_json"]) if row else None
+
+
+def save_day_allocation(conn: sqlite3.Connection, allocation: dict) -> dict:
+    import json
+    day = str(allocation["day"])
+    conn.execute(
+        "INSERT OR REPLACE INTO day_allocation (day, data_json) VALUES (?, ?)",
+        (day, json.dumps(allocation)),
+    )
+    conn.commit()
+    return allocation
+
+
+def delete_day_allocation(conn: sqlite3.Connection, day: str) -> None:
+    conn.execute("DELETE FROM day_allocation WHERE day=?", (day,))
+    conn.commit()
+
+
 def replace_assignments(conn: sqlite3.Connection, schedule_id: int,
                         assignments: list) -> None:
     """Replace all boat_assignments for a schedule from Yjs commit.

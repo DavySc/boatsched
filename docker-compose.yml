@@ -1,0 +1,13 @@
+services:
+  boatsched:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - boatsched_data:/data
+    environment:
+      - BOATSCHED_DB=/data/boatsched.db
+
+volumes:
+  boatsched_data:

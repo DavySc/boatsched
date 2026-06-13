@@ -34,3 +34,7 @@ schedule.csv
 *.db
 *.db-shm
 *.db-wal
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
