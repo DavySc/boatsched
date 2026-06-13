@@ -1,11 +1,18 @@
 # boatsched
 
-A sailing camp management application with two integrated tools:
+A sailing camp management application served as a single, mobile-friendly SPA
+(`viewer.html`) backed by one Python server, one SQLite database, and one login.
+It bundles:
 
-- **Zeilkamp App** — mobile-friendly evaluation tracker for instructors: manage campers, fill in daily skill evaluation cards, and record manual boat allocations.
-- **Rooster Optimizer** — schedule generator that assigns kids to boats over multiple days under level constraints, optimising a strict lexicographic objective with OR-Tools CP-SAT.
+- **Rooster Optimizer** — schedule generator that assigns kids to boats over
+  multiple days under level constraints, optimising a strict lexicographic
+  objective with OR-Tools CP-SAT, with real-time collaborative editing.
+- **Member & instructor management** — seed members from CSV, manage admin
+  roles, and view each member's level progression across seasons.
+- **Evaluation cards** — per-camper daily skill-evaluation UI (skill-result
+  persistence is modelled in the DB but not yet wired to an API — see CLAUDE.md).
 
-Both tools share one Python backend, one SQLite database, and one login.
+The UI language is Dutch.
 
 ---
 
@@ -13,26 +20,24 @@ Both tools share one Python backend, one SQLite database, and one login.
 
 ```
 boatsched/
-├── frontend/          React + Vite + Tailwind v4 (Zeilkamp App UI)
-│   ├── src/
-│   └── dist/          built output (gitignored; served by Python server)
 ├── src/boatsched/     Python package (FastAPI server + solver + DB)
-│   ├── server.py
-│   ├── solver.py
-│   ├── db.py
-│   ├── roster.py
-│   ├── cli.py
-│   └── viewer.html    Rooster Optimizer SPA (embedded)
+│   ├── server.py      FastAPI app factory + routes
+│   ├── solver.py      OR-Tools CP-SAT model
+│   ├── db.py          SQLite helpers + migrations
+│   ├── roster.py      roster CSV ingestion
+│   ├── cli.py         offline CLI entry point
+│   └── viewer.html    the entire SPA (vanilla JS, embedded as a package asset)
+├── tests/
 ├── deploy/            nginx + systemd config for bare-metal Hetzner
 ├── Dockerfile
-└── docker-compose.yml
+├── docker-compose.yml
+└── pyproject.toml
 ```
 
-The Python server at runtime:
-- Serves the React SPA at `/` (from `frontend/dist/` when built)
-- Serves the Rooster Optimizer at `/optimizer`
-- Exposes a REST API at `/api/` for the React app
-- Exposes the existing schedule/solver API for the optimizer
+There is **no separate frontend build** — `viewer.html` is a self-contained
+single-page app (it loads Yjs from esm.sh for collaborative editing). The Python
+server serves it at `/` and exposes the JSON/WebSocket API it calls. See
+`CLAUDE.md` for the full route and schema reference.
 
 ---
 
@@ -41,43 +46,26 @@ The Python server at runtime:
 ### Prerequisites
 
 - Python 3.11+
-- Node.js 20+
 
-### Python backend
+### Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
+pip install -e ".[dev]"            # includes pytest, httpx, pytest-asyncio
 ```
 
 ### Running locally
 
-Start the Python backend (in one terminal):
-
 ```bash
 source .venv/bin/activate
 boatsched-server --db boatsched.db
-# Listening on http://localhost:8000
+# App at http://localhost:8000
 ```
 
-Start the Vite dev server (in another terminal) — it proxies `/api` and `/optimizer` to the Python server:
-
-```bash
-cd frontend
-npm run dev
-# Zeilkamp App at http://localhost:5173
-# Optimizer at  http://localhost:5173/optimizer
-```
-
-On first startup with a fresh database the server redirects to `/setup` where you create the first instructor account.
+With a fresh local database and no admin/password set, the server runs in **open
+mode** — any login is accepted so you can start immediately. Set a password on an
+instructor (or run with the production env vars below) to switch on real auth.
 
 ### Tests
 
@@ -120,8 +108,8 @@ docker compose up -d --build
 
 `docker-compose.yml` sets `BOATSCHED_REQUIRE_AUTH=1`, `BOATSCHED_SECURE_COOKIES=1`,
 and a minimum password length, and mounts a named volume at `/data` for the
-SQLite database. Then configure nginx as in step 6 below so HTTPS terminates in
-front of the container.
+SQLite database. Then configure nginx as in Option B step 6 below so HTTPS
+terminates in front of the container.
 
 ### Option B — nginx + systemd (bare-metal)
 
@@ -131,15 +119,7 @@ front of the container.
 apt install python3.11 python3.11-venv python3-pip nginx
 ```
 
-**2. Build the frontend:**
-
-```bash
-cd /opt/boatsched/frontend
-npm ci
-npm run build
-```
-
-**3. Install the Python package:**
+**2. Install the Python package:**
 
 ```bash
 cd /opt/boatsched
@@ -147,7 +127,7 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-**4. Create a system user and data directory:**
+**3. Create a system user and data directory:**
 
 ```bash
 useradd --system --home /opt/boatsched boatsched
@@ -155,7 +135,7 @@ mkdir -p /var/lib/boatsched
 chown boatsched /var/lib/boatsched
 ```
 
-**5. Create the secrets / env file (root-owned, 0600):**
+**4. Create the secrets / env file (root-owned, 0600):**
 
 The systemd unit loads `/etc/boatsched/boatsched.env`. It **must** contain the
 bootstrap admin credentials, or the service starts locked (nobody can log in):
@@ -174,7 +154,7 @@ Production hardening (`require_auth`, secure cookies, 8-char min password) is on
 automatically because the service runs with `--db`. The admin password is seeded
 on first start; changing it later in the UI persists across restarts.
 
-**6. Install and enable the systemd service:**
+**5. Install and enable the systemd service:**
 
 ```bash
 cp deploy/boatsched.service /etc/systemd/system/
@@ -182,7 +162,7 @@ systemctl daemon-reload
 systemctl enable --now boatsched
 ```
 
-**7. Configure nginx (TLS, rate limiting, security headers):**
+**6. Configure nginx (TLS, rate limiting, security headers):**
 
 The provided config is an `http`-context file (it defines `limit_req_zone`),
 so install it under `conf.d/`, not `sites-available/`. Edit `server_name` to
@@ -274,6 +254,6 @@ Stage C usually finishes `FEASIBLE` (good, not proven minimal). Raise `--seconds
 
 ## Notes
 
-- The server enforces authentication for all routes. On first run it redirects to `/setup` (only accessible before any instructor account exists) to create the first account.
+- In production every route requires authentication; the first admin is seeded from `BOATSCHED_ADMIN` / `BOATSCHED_ADMIN_PW` (see Deployment). In local open mode (no password set) auth is bypassed for convenience.
 - Stage C is NP-hard; more `--seconds` gives a better but not necessarily optimal result.
 - The Docker image is self-contained — no external services required.
