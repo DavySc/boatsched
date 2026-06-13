@@ -53,92 +53,108 @@ boatsched --counts k=12 b=16 A=12 B=12 --boats 13
 
 - **`solver.py`** — core CP-SAT model. `Config` holds all tunables. `staged_solve()` runs stages A→B→C in strict lexicographic order, locking each optimum as a hard constraint before the next stage. `solve()` is the single entry point used by callers and tests.
 - **`roster.py`** — roster ingestion. `load_roster()` reads a file; `parse_roster_bytes()` reads raw bytes for HTTP uploads; `roster_from_counts()` builds a synthetic roster.
-- **`server.py`** — FastAPI app factory: `create_app(cfg, db_conn) → FastAPI`. Background solve jobs run in `threading.Thread(daemon=True)`. Serves `viewer.html` at `/`.
+- **`server.py`** — FastAPI app factory. Background solve jobs run in `threading.Thread(daemon=True)`. Serves `viewer.html` at `/`. Signature:
+  ```python
+  create_app(cfg, db_conn=None, *,
+             require_auth=False, secure_cookies=False, session_ttl=12*3600,
+             login_max_failures=20, login_window=300,
+             max_upload_bytes=5*1024*1024, max_ws_message_bytes=1024*1024,
+             min_password_len=1) -> FastAPI
+  ```
+  Every security knob defaults to the permissive/dev value so the test suite is
+  unaffected; `main()` flips them to strict production values whenever `--db` is
+  passed. See **Authentication & hardening** below.
 - **`cli.py`** — thin argparse wrapper around `solve()`.
 - **`db.py`** — all SQLite helpers. Schema is created by `_create_tables()`; migrations are additive ALTER TABLE calls.
 
 ### Server routes
 
-#### Optimizer
+#### Optimizer / scheduling
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Serve `viewer.html` |
-| GET | `/config` | Solver config JSON |
-| GET/POST | `/seasons` | List / create seasons |
-| GET/POST | `/boats`, `/boat` | List boats / rename a boat |
-| GET | `/schedules?season_id=` | List schedules for a season |
-| GET | `/schedule?id=` | Get schedule rows |
-| POST | `/solve?season_id=` | Start background solve job |
-| GET | `/status?id=` | Poll solve job |
-| POST | `/swap` | Swap two kids between boats |
-| WS | `/collab/{schedule_id}` | Yjs collaborative editing |
-| POST | `/schedule/{id}/commit` | Validate and write Yjs state to DB |
-| POST | `/schedule/{id}/start-date` | Set schedule start date (locks edits) |
+| Method | Path | Description | Admin? |
+|--------|------|-------------|--------|
+| GET | `/` , `/index.html` | Serve `viewer.html` | public |
+| GET | `/config` | Solver config JSON | auth |
+| GET/POST | `/seasons` | List / create seasons | POST: admin |
+| GET | `/boats` , POST `/boat` | List boats / rename a boat | auth |
+| GET | `/schedules?season_id=` | List schedules for a season | auth |
+| GET | `/schedule?id=` | Get schedule rows + start date | auth |
+| POST | `/solve?season_id=` | Start background solve job | admin (with DB) |
+| GET | `/status?id=` | Poll solve job | auth |
+| POST | `/swap` | Swap two kids between boats | auth |
+| WS | `/collab/{schedule_id}` | Yjs collaborative editing | auth |
+| POST | `/schedule/{id}/commit` | Validate and write Yjs state to DB | auth |
+| POST | `/schedule/{id}/start-date` | Set schedule start date (locks edits) | auth |
 
-#### Instructor management
+#### Instructor / auth
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET/POST | `/instructor` | Create additional instructor |
-| POST | `/set-password` | Change instructor password |
-| GET | `/instructors` | List instructors |
+| Method | Path | Description | Admin? |
+|--------|------|-------------|--------|
+| GET | `/instructors` | List instructors (`is_admin`, `has_password`) | auth |
+| POST | `/instructor` | Create instructor (first one auto-admin) | admin |
+| POST | `/set-password` | Change a password (own, or any if admin) | self/admin |
+| POST | `/api/auth/login` | JSON login `{name, password}` → `bsession` cookie | public |
+| POST | `/api/auth/logout` | Clear session | public |
+| GET | `/api/auth/me` | `{member_id, name, is_admin}` for current session | auth |
+| POST | `/api/instructors/{member_id}/set-admin` | Grant/revoke admin (`{is_admin}`) | admin |
+| GET | `/api/health` | Health check (no auth — for uptime monitors) | public |
 
-#### API (JSON, called by viewer.html)
+#### Members (JSON, called by viewer.html)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/auth/login` | JSON login `{name, password}` → sets `bsession` cookie |
-| POST | `/api/auth/logout` | Clear session |
-| GET | `/api/auth/me` | Check current session |
-| GET | `/api/health` | Health check |
-| GET | `/api/students` | List active students `{students: Student[]}` |
-| POST | `/api/students` | Upsert student list `{students}` |
-| PUT | `/api/students/{id}` | Update one student |
-| DELETE | `/api/students/{id}` | Soft-delete (sets active=0) |
-| GET | `/api/progress` | All progress records `{progressData: StudentProgress[]}` |
-| GET | `/api/progress/{studentId}` | One student's progress |
-| POST | `/api/progress` | Save/update progress record |
-| DELETE | `/api/progress/{studentId}` | Delete progress record |
-| GET | `/api/boat-allocations` | All day allocations `{boatAllocations: DayAllocation[]}` |
-| GET | `/api/boat-allocations/{day}` | One day's allocation |
-| POST | `/api/boat-allocations` | Save/update day allocation |
-| DELETE | `/api/boat-allocations/{day}` | Delete day allocation |
+| Method | Path | Description | Admin? |
+|--------|------|-------------|--------|
+| GET | `/api/members` | List active members `[{id, name}]` | auth |
+| GET | `/api/members/progression` | `{seasons, members[]}` — level per season, excludes instructors | auth |
+| PUT | `/api/members/{id}` | Rename a member `{name}` | admin |
+| DELETE | `/api/members/{id}` | Soft-delete (`active=0`); 409 if member is an instructor | admin |
+| POST | `/api/members/import` | Seed members from a CSV with a `name` column | admin |
+
+> **Known gap:** `viewer.html`'s evaluation cards call `GET`/`POST /api/progress`,
+> but no such route exists in `server.py` — those calls fail silently (wrapped
+> in `try`/`catch`). Skill-result persistence (`skill_result` / `v_level_card`)
+> is modelled in the DB but not yet wired to an API.
 
 ### DB schema
 
-#### Original tables (do not modify `_create_tables()`)
+The full schema below is created by `_create_tables()` (do not modify — see
+constraints). The migration helpers add columns to **pre-existing** databases
+made by older versions; on a fresh DB they are no-ops.
 
 ```sql
-member          (id, name, level TEXT CHECK IN ('k','b','A','B'), active, joined)
-instructor      (instructor_id, member_id, password_hash BLOB, password_salt BLOB)
+member          (id, name, active, joined)             -- NO level column
+instructor      (instructor_id, member_id, password_hash BLOB,
+                 password_salt BLOB, is_admin)          -- is_admin via migration
 season          (id, year)
-schedule        (id, season_id, created, start_date, config TEXT, yjs_state BLOB)
-boat            (boat_id, name, notes)
+schedule        (id, season_id, created, start_date, config TEXT,
+                 yjs_state BLOB)                         -- yjs_state via migration
+boat            (boat_id, name, notes)                  -- seeds boat_id 1..13
 boat_assignment (id, schedule_id, member_id, boat_id, day)
+enrollment      (member_id, season_id, level CHECK IN ('k','b','A','B'),
+                 PRIMARY KEY (member_id, season_id))     -- level is PER SEASON
+skill           (id, level, code, label, ordinal, retired)
+skill_result    (member_id, season_id, skill_id, status, note,
+                 FK (member_id, season_id) → enrollment)
+v_level_card    VIEW joining enrollment × skill (live skills) ⟕ skill_result
 ```
 
-#### Camp tracker tables (added by `add_camp_tables()`)
+Migration functions, all idempotent, run once in `create_app()`:
+`add_yjs_state_column`, `add_start_date_column`, `add_enrollment_tables`,
+`drop_member_level_column` (removes legacy `member.level`),
+`drop_legacy_camp_tables` (drops old `progress_record` / `day_allocation`),
+`add_admin_column`, `auto_grant_first_admin` (promotes all existing instructors
+the first time admin roles appear).
 
-```sql
-progress_record (student_id TEXT PK, data_json TEXT)
-day_allocation  (day TEXT PK, data_json TEXT)
-```
+#### Levels & membership
 
-`progress_record` and `day_allocation` store full JSON objects verbatim. `student_id` in `progress_record` is `member.id` serialised as a string.
-
-#### Level mapping
-
-viewer.html uses numeric levels; the DB uses strings:
-
-| UI | DB |
-|---|---|
-| 1 (Ketelbinkie) | `'k'` |
-| 2 (Bemanning) | `'b'` |
-| 3 (A) | `'A'` |
-| 4 (B) | `'B'` |
-
-Mapping lives in `db.py`: `_LEVEL_TO_NUM`, `_NUM_TO_LEVEL`.
+- A member's level is **per season**, stored as a string `'k' | 'b' | 'A' | 'B'`
+  in `enrollment` (low→high). There is no `member.level` column and no numeric
+  mapping helper anymore.
+- viewer.html maps the codes to Dutch labels via `LV_LABEL`
+  (`k`=Ketelbinkie, `b`=Bemanning, `A`=A, `B`=B) and colours via `LV_COLOR`.
+- **Roster CSV semantics** (`add_or_update_members`): `'k'`-level rows are new
+  participants and are auto-created in `member`; every other level must already
+  exist in `member` or a `RuntimeError` is raised (prevents silently dropping
+  returning members from a solve).
 
 ### Lexicographic objective (A > B > C)
 
@@ -159,12 +175,33 @@ Mapping lives in `db.py`: `_LEVEL_TO_NUM`, `_NUM_TO_LEVEL`.
 
 On solve completion `_run_job` initialises and persists the Yjs state. "Commit schedule" (`POST /schedule/{id}/commit`) validates the doc and writes to `boat_assignment`.
 
-### Authentication
+### Authentication & hardening
 
-All non-public routes require a `bsession` session cookie. The server operates in two modes:
+All non-public routes require a `bsession` session cookie (in-memory store,
+`(member_id, expiry)` with TTL eviction). Modes:
 
-- **Open mode** — no instructor has a password yet. All requests are allowed.
-- **Auth mode** — at least one instructor has a password. All routes require a valid session.
+- **Open mode** (dev only) — no DB, or no instructor has a password yet. All
+  requests are allowed. **Disabled when `require_auth=True`.**
+- **Auth mode** — at least one password is set (or `require_auth=True`). Every
+  protected route needs a valid session.
+
+**Roles.** `instructor.is_admin` gates privileged actions: run the solver,
+create seasons, import/rename/delete members, create instructors, and grant or
+revoke admin. Non-admins may log in, view schedules, edit collaboratively, and
+change their own password. In open mode everyone is treated as admin.
+
+**Production bootstrap.** There is no anonymous window: `main()` seeds the first
+admin from `BOATSCHED_ADMIN` / `BOATSCHED_ADMIN_PW` via `db.ensure_admin()`
+(idempotent — sets the password only if none exists, so UI changes survive
+restarts).
+
+**Hardening (enabled by `main()` when `--db` is set; see env-var table in
+`README.md`):** `require_auth`, `secure_cookies`, session TTL, per-IP failed-
+login throttle (429), upload size caps (413), WS frame-size guard, `JOBS`
+pruning, generic 500 responses (`_server_error`), security headers in
+middleware, and a `min_password_len` of 8. Tests live in
+`tests/test_security.py`; the deploy configs (`deploy/nginx.conf` TLS + rate
+limits, `deploy/boatsched.service` env-file + sandboxing) complete the picture.
 
 ### Public Python API
 
