@@ -8,6 +8,11 @@ from boatsched.db import (
     create_season, list_seasons, save_schedule, init_db,
     list_schedules, get_schedule, swap_assignment,
     list_boats, rename_boat,
+    seed_members, list_members, delete_member, rename_member,
+    set_admin, get_yjs_state, set_yjs_state, set_schedule_start_date,
+    get_schedule_start_date, replace_assignments,
+    add_admin_column, auto_grant_first_admin, add_yjs_state_column,
+    add_start_date_column,
 )
 from boatsched.roster import parse_roster_bytes, roster_from_counts
 
@@ -78,14 +83,24 @@ class TestInsert:
 
     def test_multiple_members(self, conn):
         members = [("Alice", "k"), ("Bob", "b"), ("Carol", "A"), ("Dave", "B")]
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         _assert_names_present(conn, members)
 
     def test_row_count_matches_input(self, conn):
         members = [("Alice", "k"), ("Bob", "b"), ("Carol", "A")]
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
         assert count == len(members)
+
+    def test_non_k_member_not_found_raises(self, conn):
+        with pytest.raises(RuntimeError, match="not found"):
+            add_or_update_members(conn, [("Ghost", "b")])
 
     def test_empty_list_inserts_nothing(self, conn):
         add_or_update_members(conn, [])
@@ -103,6 +118,8 @@ class TestUpdate:
         assert count == 1
 
     def test_unchanged_member_stays_intact(self, conn):
+        conn.execute("INSERT INTO member (name) VALUES ('Bob')")
+        conn.commit()
         add_or_update_members(conn, [("Alice", "k"), ("Bob", "b")])
         add_or_update_members(conn, [("Alice", "A")])
         _assert_names_present(conn, [("Alice", "A"), ("Bob", "b")])
@@ -117,18 +134,27 @@ class TestCsvRoundTrip:
     def test_all_csv_names_in_db(self, conn):
         csv = b"name,level\nAlice,k\nBob,b\nCarol,A\nDave,B\n"
         members = parse_roster_bytes(csv)
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         _assert_names_present(conn, members)
 
     def test_csv_row_count_matches_db(self, conn):
         csv = b"name,level\nAlice,k\nBob,b\nCarol,A\nDave,B\n"
         members = parse_roster_bytes(csv)
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
         assert count == len(members)
 
     def test_large_roster_all_names_present(self, conn):
         members = roster_from_counts({"k": 12, "b": 16, "A": 12, "B": 12})
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         _assert_names_present(conn, members)
 
@@ -189,6 +215,8 @@ class TestEnrollment:
 
     def test_get_season_roster_returns_enrolled_members(self, fconn):
         sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Bob')")
+        fconn.commit()
         add_or_update_members(fconn, [("Alice", "k"), ("Bob", "b")], sid)
         roster = get_season_roster(fconn, sid)
         assert sorted(roster) == sorted([("Alice", "k"), ("Bob", "b")])
@@ -471,6 +499,9 @@ class TestSaveSchedule:
     def _seed(self, conn, year=2026):
         """Create season, add four members with enrollment, return season_id."""
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return sid
 
@@ -534,6 +565,9 @@ class TestSaveSchedule:
 class TestListSchedules:
     def _seed(self, conn, year=2026):
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return sid
 
@@ -573,6 +607,9 @@ class TestListSchedules:
 class TestGetSchedule:
     def _seed(self, conn, year=2026):
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return save_schedule(conn, sid, "{}", _RESULT_4)
 
@@ -609,6 +646,9 @@ class TestGetSchedule:
 class TestSwapAssignment:
     def _seed(self, conn, year=2026):
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return save_schedule(conn, sid, "{}", _RESULT_4)
 
@@ -695,3 +735,293 @@ class TestBoats:
         rename_boat(fconn, 3, "Sunfish")
         others = [b for b in list_boats(fconn) if b["id"] != 3]
         assert all(b["name"] is None for b in others)
+
+
+# ---------------------------------------------------------------------------
+# Migration idempotency
+# ---------------------------------------------------------------------------
+
+class TestMigrationIdempotency:
+    def test_add_admin_column_is_idempotent(self, fconn):
+        """Column already exists after init_db — second call must not raise."""
+        add_admin_column(fconn)  # should be a no-op (catches OperationalError)
+        rows = fconn.execute("PRAGMA table_info(instructor)").fetchall()
+        col_names = [r["name"] for r in rows]
+        assert "is_admin" in col_names
+
+    def test_add_yjs_state_column_is_idempotent(self, fconn):
+        add_yjs_state_column(fconn)
+        rows = fconn.execute("PRAGMA table_info(schedule)").fetchall()
+        assert any(r["name"] == "yjs_state" for r in rows)
+
+    def test_add_start_date_column_is_idempotent(self, fconn):
+        add_start_date_column(fconn)
+        rows = fconn.execute("PRAGMA table_info(schedule)").fetchall()
+        assert any(r["name"] == "start_date" for r in rows)
+
+    def test_auto_grant_first_admin_skips_when_admin_exists(self, fconn):
+        """With an admin already present it must leave counts unchanged."""
+        add_admin_column(fconn)  # ensure column exists (init_db doesn't run migrations)
+        fconn.execute("INSERT INTO member (name) VALUES ('Root')")
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='Root'").fetchone()["id"]
+        fconn.execute("INSERT INTO instructor (member_id, is_admin) VALUES (?, 1)", (mid,))
+        fconn.commit()
+        auto_grant_first_admin(fconn)  # must be a no-op
+        count = fconn.execute("SELECT COUNT(*) FROM instructor WHERE is_admin=1").fetchone()[0]
+        assert count == 1
+
+    def test_auto_grant_first_admin_promotes_all_when_none(self, fconn):
+        add_admin_column(fconn)
+        for name in ("I1", "I2"):
+            fconn.execute("INSERT INTO member (name) VALUES (?)", (name,))
+            mid = fconn.execute("SELECT id FROM member WHERE name=?", (name,)).fetchone()["id"]
+            fconn.execute("INSERT INTO instructor (member_id, is_admin) VALUES (?, 0)", (mid,))
+        fconn.commit()
+        auto_grant_first_admin(fconn)
+        count = fconn.execute("SELECT COUNT(*) FROM instructor WHERE is_admin=0").fetchone()[0]
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# seed_members
+# ---------------------------------------------------------------------------
+
+class TestSeedMembers:
+    def test_inserts_new_names(self, fconn):
+        result = seed_members(fconn, ["Alpha", "Beta"])
+        assert result["created"] == 2
+        names = {r["name"] for r in fconn.execute("SELECT name FROM member")}
+        assert {"Alpha", "Beta"} <= names
+
+    def test_existing_names_count_as_existing(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('Gamma')")
+        fconn.commit()
+        result = seed_members(fconn, ["Gamma", "Delta"])
+        assert result["created"] == 1
+        assert result["existing"] == 1
+
+    def test_total_reflects_full_table(self, fconn):
+        seed_members(fconn, ["E1", "E2"])
+        result = seed_members(fconn, ["E3"])
+        assert result["total"] >= 3
+
+    def test_empty_list_returns_zero_created(self, fconn):
+        result = seed_members(fconn, [])
+        assert result["created"] == 0
+        assert result["existing"] == 0
+
+    def test_blank_names_filtered_out(self, fconn):
+        result = seed_members(fconn, ["  ", "", None, "Valid"])
+        assert result["created"] == 1
+
+    def test_strips_whitespace_from_names(self, fconn):
+        seed_members(fconn, ["  Trimmed  "])
+        names = {r["name"] for r in fconn.execute("SELECT name FROM member")}
+        assert "Trimmed" in names
+        assert "  Trimmed  " not in names
+
+
+# ---------------------------------------------------------------------------
+# list_members
+# ---------------------------------------------------------------------------
+
+class TestListMembers:
+    def test_returns_active_members(self, fconn):
+        fconn.executemany("INSERT INTO member (name) VALUES (?)", [("L1",), ("L2",)])
+        fconn.commit()
+        members = list_members(fconn)
+        names = [m["name"] for m in members]
+        assert "L1" in names and "L2" in names
+
+    def test_inactive_members_excluded(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('Inactive')")
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='Inactive'").fetchone()["id"]
+        fconn.execute("UPDATE member SET active=0 WHERE id=?", (mid,))
+        fconn.commit()
+        names = [m["name"] for m in list_members(fconn)]
+        assert "Inactive" not in names
+
+    def test_ordered_by_name(self, fconn):
+        fconn.executemany("INSERT INTO member (name) VALUES (?)", [("Zara",), ("Anna",)])
+        fconn.commit()
+        names = [m["name"] for m in list_members(fconn)]
+        assert names == sorted(names)
+
+    def test_has_id_and_name_keys(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('KeyCheck')")
+        fconn.commit()
+        m = next(x for x in list_members(fconn) if x["name"] == "KeyCheck")
+        assert "id" in m and "name" in m
+
+
+# ---------------------------------------------------------------------------
+# delete_member / rename_member
+# ---------------------------------------------------------------------------
+
+class TestDeleteMemberDb:
+    def test_sets_active_to_zero(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('Del1')")
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='Del1'").fetchone()["id"]
+        delete_member(fconn, mid)
+        active = fconn.execute("SELECT active FROM member WHERE id=?", (mid,)).fetchone()["active"]
+        assert active == 0
+
+    def test_raises_if_instructor(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('Inst1')")
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='Inst1'").fetchone()["id"]
+        fconn.execute("INSERT INTO instructor (member_id) VALUES (?)", (mid,))
+        fconn.commit()
+        with pytest.raises(ValueError, match="instructeur"):
+            delete_member(fconn, mid)
+
+
+class TestRenameMemberDb:
+    def test_rename_updates_name(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('OldName')")
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='OldName'").fetchone()["id"]
+        rename_member(fconn, mid, "NewName")
+        row = fconn.execute("SELECT name FROM member WHERE id=?", (mid,)).fetchone()
+        assert row["name"] == "NewName"
+
+    def test_empty_name_raises(self, fconn):
+        fconn.execute("INSERT INTO member (name) VALUES ('HasName')")
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='HasName'").fetchone()["id"]
+        with pytest.raises(ValueError, match="empty"):
+            rename_member(fconn, mid, "   ")
+
+    def test_collision_raises(self, fconn):
+        fconn.executemany("INSERT INTO member (name) VALUES (?)", [("Exists",), ("ToRename",)])
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name='ToRename'").fetchone()["id"]
+        with pytest.raises(ValueError, match="bestaat"):
+            rename_member(fconn, mid, "Exists")
+
+
+# ---------------------------------------------------------------------------
+# set_admin
+# ---------------------------------------------------------------------------
+
+class TestSetAdminDb:
+    def _make_instructor(self, fconn, name, is_admin=False):
+        add_admin_column(fconn)  # migration not run by init_db
+        fconn.execute("INSERT INTO member (name) VALUES (?)", (name,))
+        fconn.commit()
+        mid = fconn.execute("SELECT id FROM member WHERE name=?", (name,)).fetchone()["id"]
+        fconn.execute("INSERT INTO instructor (member_id, is_admin) VALUES (?, ?)",
+                      (mid, 1 if is_admin else 0))
+        fconn.commit()
+        return mid
+
+    def test_promote_to_admin(self, fconn):
+        mid = self._make_instructor(fconn, "Promo", is_admin=False)
+        set_admin(fconn, mid, True)
+        row = fconn.execute("SELECT is_admin FROM instructor WHERE member_id=?", (mid,)).fetchone()
+        assert row["is_admin"] == 1
+
+    def test_demote_from_admin(self, fconn):
+        mid = self._make_instructor(fconn, "Demote", is_admin=True)
+        set_admin(fconn, mid, False)
+        row = fconn.execute("SELECT is_admin FROM instructor WHERE member_id=?", (mid,)).fetchone()
+        assert row["is_admin"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get/set_yjs_state
+# ---------------------------------------------------------------------------
+
+class TestYjsState:
+    def _make_schedule(self, fconn):
+        add_yjs_state_column(fconn)  # migration not run by init_db
+        sid = create_season(fconn, 9001)
+        fconn.execute("INSERT INTO schedule (season_id, config) VALUES (?, ?)", (sid, "{}"))
+        fconn.commit()
+        return fconn.execute("SELECT id FROM schedule WHERE season_id=?", (sid,)).fetchone()["id"]
+
+    def test_returns_none_when_not_set(self, fconn):
+        sch_id = self._make_schedule(fconn)
+        assert get_yjs_state(fconn, sch_id) is None
+
+    def test_returns_bytes_after_set(self, fconn):
+        sch_id = self._make_schedule(fconn)
+        payload = b"\x00\x01\x02state"
+        set_yjs_state(fconn, sch_id, payload)
+        result = get_yjs_state(fconn, sch_id)
+        assert result == payload
+
+    def test_returns_none_for_unknown_id(self, fconn):
+        add_yjs_state_column(fconn)
+        assert get_yjs_state(fconn, 99999) is None
+
+
+# ---------------------------------------------------------------------------
+# get/set_schedule_start_date
+# ---------------------------------------------------------------------------
+
+class TestScheduleStartDate:
+    def _make_schedule(self, fconn):
+        add_start_date_column(fconn)  # migration not run by init_db
+        sid = create_season(fconn, 9002)
+        fconn.execute("INSERT INTO schedule (season_id, config) VALUES (?, ?)", (sid, "{}"))
+        fconn.commit()
+        return fconn.execute("SELECT id FROM schedule WHERE season_id=?", (sid,)).fetchone()["id"]
+
+    def test_returns_none_when_not_set(self, fconn):
+        sch_id = self._make_schedule(fconn)
+        assert get_schedule_start_date(fconn, sch_id) is None
+
+    def test_set_and_get_roundtrip(self, fconn):
+        sch_id = self._make_schedule(fconn)
+        set_schedule_start_date(fconn, sch_id, "2099-07-01")
+        assert get_schedule_start_date(fconn, sch_id) == "2099-07-01"
+
+    def test_overwrite_date(self, fconn):
+        sch_id = self._make_schedule(fconn)
+        set_schedule_start_date(fconn, sch_id, "2099-07-01")
+        set_schedule_start_date(fconn, sch_id, "2099-08-01")
+        assert get_schedule_start_date(fconn, sch_id) == "2099-08-01"
+
+
+# ---------------------------------------------------------------------------
+# replace_assignments
+# ---------------------------------------------------------------------------
+
+class TestReplaceAssignments:
+    def _seed(self, fconn):
+        sid = create_season(fconn, 9003)
+        for name in ("Alice", "Bob"):
+            fconn.execute("INSERT INTO member (name) VALUES (?)", (name,))
+        fconn.commit()
+        alice_id = fconn.execute("SELECT id FROM member WHERE name='Alice'").fetchone()["id"]
+        bob_id = fconn.execute("SELECT id FROM member WHERE name='Bob'").fetchone()["id"]
+        fconn.executemany(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (?, ?, 'k')",
+            [(alice_id, sid), (bob_id, sid)],
+        )
+        fconn.execute("INSERT INTO schedule (season_id, config) VALUES (?, ?)", (sid, "{}"))
+        fconn.commit()
+        sch_id = fconn.execute("SELECT id FROM schedule WHERE season_id=?", (sid,)).fetchone()["id"]
+        fconn.executemany(
+            "INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day) VALUES (?, ?, 1, 'Sat')",
+            [(sch_id, alice_id), (sch_id, bob_id)],
+        )
+        fconn.commit()
+        return sch_id
+
+    def test_replaces_all_rows(self, fconn):
+        sch_id = self._seed(fconn)
+        replace_assignments(fconn, sch_id, [("Alice", "Sat", 2), ("Bob", "Sat", 2)])
+        rows = fconn.execute(
+            "SELECT boat_id FROM boat_assignment WHERE schedule_id=?", (sch_id,)
+        ).fetchall()
+        assert all(r["boat_id"] == 2 for r in rows)
+
+    def test_unknown_member_raises(self, fconn):
+        sch_id = self._seed(fconn)
+        with pytest.raises(RuntimeError, match="not found"):
+            replace_assignments(fconn, sch_id, [("NoSuchMember", "Sat", 1)])

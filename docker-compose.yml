@@ -2,12 +2,21 @@ services:
   boatsched:
     build: .
     restart: unless-stopped
+    # Bind to localhost ONLY — never publish the app port to the internet.
+    # Put nginx (TLS, rate limiting, security headers) in front of it.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - boatsched_data:/data
+    # Secrets come from a local .env file (chmod 600, NOT committed).
+    # Required: BOATSCHED_ADMIN, BOATSCHED_ADMIN_PW
+    env_file:
+      - .env
     environment:
       - BOATSCHED_DB=/data/boatsched.db
+      - BOATSCHED_REQUIRE_AUTH=1
+      - BOATSCHED_SECURE_COOKIES=1
+      - BOATSCHED_MIN_PASSWORD_LEN=8
 
 volumes:
   boatsched_data:

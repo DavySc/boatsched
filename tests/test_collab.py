@@ -27,6 +27,10 @@ CFG = Config(
 @pytest.fixture
 def collab_client(tmp_path):
     db_conn = _db.init_db(str(tmp_path / "collab.db"))
+    # Carol and Dave are returning (non-k) members in ROSTER_CSV; pre-seed them.
+    db_conn.executemany("INSERT INTO member (name) VALUES (?)",
+                        [("Carol",), ("Dave",)])
+    db_conn.commit()
     app = create_app(CFG, db_conn)
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client, db_conn

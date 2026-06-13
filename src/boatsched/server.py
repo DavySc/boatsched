@@ -6,9 +6,11 @@ import asyncio
 from datetime import date as _date
 import importlib.resources as resources
 import json
+import os
 import secrets
 import sys
 import threading
+import time as _time
 import traceback
 import uuid
 from collections import defaultdict
@@ -26,11 +28,64 @@ from . import db as _db
 
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+JOB_TTL = 3600          # seconds a finished job is retained for polling
+JOB_MAX = 200           # hard cap on retained jobs (bounds memory)
+
+
+def _prune_jobs() -> None:
+    """Evict expired/oldest jobs. Caller must hold JOBS_LOCK."""
+    now = _time.time()
+    for jid in [j for j, v in JOBS.items()
+                if v.get("status") != "running"
+                and now - v.get("created", now) > JOB_TTL]:
+        JOBS.pop(jid, None)
+    if len(JOBS) > JOB_MAX:
+        for jid, _v in sorted(JOBS.items(),
+                              key=lambda kv: kv[1].get("created", 0))[:len(JOBS) - JOB_MAX]:
+            JOBS.pop(jid, None)
 
 
 def _viewer_html() -> str:
     return resources.files("boatsched").joinpath("viewer.html").read_text(
         encoding="utf-8")
+
+
+def _server_error(exc: Exception, context: str = "") -> JSONResponse:
+    """Log the real exception server-side, return a generic 500 to the client.
+
+    Avoids leaking DB messages, file paths, or stack details to attackers.
+    """
+    print(f"[error] {context}: {exc!r}", file=sys.stderr)
+    return JSONResponse({"error": "internal server error"}, status_code=500)
+
+
+def _parse_names_csv(text: str) -> list:
+    """Extract names from a CSV string or a plain name-per-line list.
+
+    Supports the roster CSV format (name,level columns) and any CSV with
+    a 'name' column. Falls back to treating each non-blank line as a name.
+    """
+    import csv
+    from io import StringIO
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        return []
+    try:
+        reader = csv.DictReader(StringIO(text))
+        if reader.fieldnames:
+            norm = {f.strip().lower(): f for f in reader.fieldnames}
+            if "name" in norm:
+                key = norm["name"]
+                return [r[key].strip() for r in reader if r.get(key, "").strip()]
+    except Exception:
+        pass
+    # No 'name' header: treat each line's first token as a name
+    result = []
+    for line in lines:
+        name = line.strip().split(",")[0].strip().strip('"')
+        if name and name.lower() not in ("name", "naam"):
+            result.append(name)
+    return result
 
 
 def _extract_multipart(raw: bytes, ctype: str) -> bytes:
@@ -151,7 +206,34 @@ def _parse_message(buf: bytes):
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(cfg: Config, db_conn=None) -> FastAPI:
+def create_app(
+    cfg: Config,
+    db_conn=None,
+    *,
+    require_auth: bool = False,
+    secure_cookies: bool = False,
+    session_ttl: int = 12 * 3600,
+    login_max_failures: int = 20,
+    login_window: int = 300,
+    max_upload_bytes: int = 5 * 1024 * 1024,
+    max_ws_message_bytes: int = 1024 * 1024,
+    min_password_len: int = 1,
+) -> FastAPI:
+    """Build the FastAPI app.
+
+    Security knobs (all default to the permissive/dev behaviour so the test
+    suite is unaffected; ``main()`` enables the strict values in production):
+
+    - ``require_auth``      — when True, bootstrap/open mode is disabled and a
+                              valid session is required for every protected
+                              route, even if no instructor has a password yet.
+    - ``secure_cookies``    — set the ``Secure`` flag on the session cookie
+                              (HTTPS-only). Enable behind a TLS terminator.
+    - ``session_ttl``       — seconds before an issued session expires.
+    - ``login_max_failures``/``login_window`` — per-IP failed-login throttle.
+    - ``max_upload_bytes``  — reject bodies larger than this on upload routes.
+    - ``max_ws_message_bytes`` — drop oversized collab frames before applying.
+    """
     app = FastAPI(title="boatsched")
 
     # Run DB migrations once on startup
@@ -161,17 +243,44 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         _db.add_enrollment_tables(db_conn)
         _db.drop_member_level_column(db_conn)
         _db.drop_legacy_camp_tables(db_conn)
+        _db.add_admin_column(db_conn)
+        _db.auto_grant_first_admin(db_conn)
 
     # Per-schedule Yjs docs and connected WebSocket sets (app-scoped state)
     docs: dict[int, pycrdt.Doc] = {}
     rooms: dict[int, set] = defaultdict(set)
     room_lock = asyncio.Lock()
 
-    # In-memory session store: token → member_id
-    sessions: dict[str, int] = {}
+    # In-memory session store: token → (member_id, expiry_epoch)
+    sessions: dict[str, tuple] = {}
+    # Per-IP failed-login tracking: ip → [timestamps]
+    login_failures: dict[str, list] = {}
+
+    def _client_ip(request: Request) -> str:
+        """Best-effort client IP. Trusts X-Real-IP only (set by our nginx)."""
+        return (request.headers.get("x-real-ip")
+                or (request.client.host if request.client else "unknown"))
+
+    def _record_login_failure(ip: str) -> None:
+        now = _time.time()
+        bucket = [t for t in login_failures.get(ip, []) if now - t < login_window]
+        bucket.append(now)
+        login_failures[ip] = bucket
+
+    def _login_blocked(ip: str) -> bool:
+        now = _time.time()
+        bucket = [t for t in login_failures.get(ip, []) if now - t < login_window]
+        login_failures[ip] = bucket
+        return len(bucket) >= login_max_failures
 
     def _is_open() -> bool:
-        """True when no instructor has a password (bootstrap mode — auth not enforced)."""
+        """True only in dev: no DB, or no instructor has a password yet.
+
+        When ``require_auth`` is set (production), open/bootstrap mode is
+        disabled entirely — there is never anonymous access.
+        """
+        if require_auth:
+            return False
         if db_conn is None:
             return True
         row = db_conn.execute(
@@ -179,13 +288,40 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         ).fetchone()
         return row is None
 
+    def _current_is_admin(request: Request) -> bool:
+        """True when the request comes from an admin, or when in open/no-DB mode."""
+        if _is_open():
+            return True
+        token = request.cookies.get("bsession")
+        mid = _auth_member(token)
+        if not mid:
+            return False
+        row = db_conn.execute(
+            "SELECT is_admin FROM instructor WHERE member_id=?", (mid,)
+        ).fetchone()
+        return bool(row and row["is_admin"])
+
     def _auth_member(token: Optional[str]) -> Optional[int]:
-        """Return member_id for a valid session token, 0 in open/no-DB mode, else None."""
+        """Return member_id for a valid, unexpired session, 0 in open mode, else None."""
         if token and token in sessions:
-            return sessions[token]
+            member_id, expiry = sessions[token]
+            if _time.time() < expiry:
+                return member_id
+            sessions.pop(token, None)  # expired — evict
         if _is_open():
             return 0  # bootstrap: no passwords set yet
         return None
+
+    def _new_session(member_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        sessions[token] = (member_id, _time.time() + session_ttl)
+        return token
+
+    def _set_session_cookie(resp, token: str) -> None:
+        resp.set_cookie(
+            "bsession", token, httponly=True, samesite="lax",
+            secure=secure_cookies, max_age=session_ttl, path="/",
+        )
 
     def _is_locked(schedule_id: int) -> bool:
         """True when the schedule's start_date is today or in the past."""
@@ -199,17 +335,28 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         except ValueError:
             return False
 
+    _PUBLIC_PATHS = {
+        "/", "/index.html",
+        "/api/auth/login", "/api/auth/logout",
+        "/api/health",  # unauthenticated so uptime monitors can probe it
+    }
+
     @app.middleware("http")
     async def _auth_middleware(request: Request, call_next):
         """Require auth for all paths except the HTML root and auth endpoints."""
-        public = {"/", "/index.html", "/api/auth/login", "/api/auth/logout"}
         path = request.url.path
-        if path not in public:
+        if path not in _PUBLIC_PATHS:
             token = request.cookies.get("bsession")
             member_id = _auth_member(token)
             if member_id is None:
                 return JSONResponse({"error": "not authenticated"}, status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        # Defence-in-depth headers (nginx sets these too, but be robust if
+        # the app is ever exposed without the proxy).
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
 
     # -----------------------------------------------------------------------
     # Internal helpers
@@ -255,6 +402,15 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     # Instructor password management
     # -----------------------------------------------------------------------
 
+    def _weak_password(password: str):
+        """Return an error response if the password is too weak, else None."""
+        if len(password) < min_password_len:
+            return JSONResponse(
+                {"error": f"wachtwoord moet minstens {min_password_len} tekens zijn"},
+                status_code=400,
+            )
+        return None
+
     @app.get("/instructors")
     async def get_instructors():
         if db_conn is None:
@@ -265,6 +421,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     async def create_instructor(request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
         try:
             body = await request.json()
             name = str(body["name"]).strip()
@@ -273,6 +431,9 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=400)
         if not name or not password:
             return JSONResponse({"error": "name and password are required"}, status_code=400)
+        weak = _weak_password(password)
+        if weak is not None:
+            return weak
 
         def _create():
             row = db_conn.execute(
@@ -286,8 +447,13 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             ).fetchone()
             if already:
                 return None
+            # First instructor auto-gets admin; subsequent ones do not.
+            no_admins = db_conn.execute(
+                "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1"
+            ).fetchone() is None
             db_conn.execute(
-                "INSERT INTO instructor (member_id) VALUES (?)", (member_id,)
+                "INSERT INTO instructor (member_id, is_admin) VALUES (?, ?)",
+                (member_id, 1 if no_admins else 0),
             )
             db_conn.commit()
             return member_id
@@ -310,17 +476,23 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=400)
         if not password:
             return JSONResponse({"error": "password must not be empty"}, status_code=400)
+        weak = _weak_password(password)
+        if weak is not None:
+            return weak
         row = await asyncio.to_thread(lambda: db_conn.execute(
             "SELECT i.member_id FROM instructor i JOIN member m ON m.id = i.member_id"
             " WHERE m.name=?", (name,)
         ).fetchone())
         if row is None:
             return JSONResponse({"error": "not an instructor"}, status_code=404)
-        # In auth mode, only authenticated instructors may change passwords
         if not _is_open():
             token = request.cookies.get("bsession")
-            if _auth_member(token) is None:
+            caller = _auth_member(token)
+            if caller is None:
                 return JSONResponse({"error": "not authenticated"}, status_code=401)
+            # Non-admins may only change their own password.
+            if row["member_id"] != caller and not _current_is_admin(request):
+                return JSONResponse({"error": "admin required to change another instructor's password"}, status_code=403)
         await asyncio.to_thread(
             _db.set_instructor_password, db_conn, row["member_id"], password)
         return {"ok": True}
@@ -339,6 +511,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     async def create_season(request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database configured"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
         try:
             body = await request.json()
             year = int(body["year"])
@@ -348,7 +522,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             sid = await asyncio.to_thread(_db.create_season, db_conn, year)
             return {"id": sid, "year": year}
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return _server_error(e)
 
     # -----------------------------------------------------------------------
     # Boats
@@ -374,7 +548,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             await asyncio.to_thread(_db.rename_boat, db_conn, boat_id, name)
             return {"ok": True}
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return _server_error(e)
 
     # -----------------------------------------------------------------------
     # Schedules
@@ -398,16 +572,34 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
                 _db.get_schedule_start_date, db_conn, id)
             return {"rows": result, "start_date": start_date}
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return _server_error(e)
 
     # -----------------------------------------------------------------------
     # Solve
     # -----------------------------------------------------------------------
 
+    def _too_large(request: Request):
+        """Reject uploads whose declared size exceeds the cap (cheap guard)."""
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > max_upload_bytes:
+                    return JSONResponse({"error": "payload too large"}, status_code=413)
+            except ValueError:
+                return JSONResponse({"error": "invalid content-length"}, status_code=400)
+        return None
+
     @app.post("/solve")
     async def solve_endpoint(request: Request, season_id: Optional[str] = None):
+        if db_conn is not None and not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        oversized = _too_large(request)
+        if oversized is not None:
+            return oversized
         ctype = request.headers.get("content-type", "")
         raw = await request.body()
+        if len(raw) > max_upload_bytes:
+            return JSONResponse({"error": "payload too large"}, status_code=413)
         if ctype.startswith("multipart/form-data"):
             raw = _extract_multipart(raw, ctype)
         try:
@@ -418,11 +610,17 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             try:
                 sid = int(season_id) if season_id else None
                 await asyncio.to_thread(_db.add_or_update_members, db_conn, kids, sid)
+            except RuntimeError as e:
+                # e.g. returning members missing from the roster — actionable
+                # feedback for the (already authenticated admin) uploader.
+                return JSONResponse({"error": str(e)}, status_code=400)
             except Exception as e:
-                return JSONResponse({"error": f"db error: {e}"}, status_code=500)
+                return _server_error(e, "solve/add_members")
         jid = uuid.uuid4().hex[:12]
         with JOBS_LOCK:
-            JOBS[jid] = dict(status="running", result=None, error=None, stats=None)
+            _prune_jobs()
+            JOBS[jid] = dict(status="running", result=None, error=None,
+                             stats=None, created=_time.time())
         threading.Thread(
             target=_run_job,
             args=(jid, kids, cfg, db_conn, season_id),
@@ -461,7 +659,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
                 _db.set_schedule_start_date, db_conn, schedule_id, date_str)
             return {"ok": True}
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return _server_error(e)
 
     @app.post("/swap")
     async def swap_endpoint(request: Request):
@@ -482,7 +680,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
                 _db.swap_assignment, db_conn, schedule_id, day, name_a, name_b)
             return {"ok": True}
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return _server_error(e)
 
     # -----------------------------------------------------------------------
     # Yjs commit
@@ -522,7 +720,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
                 _db.replace_assignments, db_conn, schedule_id, assignments)
             return {"ok": True}
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return _server_error(e)
 
     # -----------------------------------------------------------------------
     # WebSocket /collab/{schedule_id} — y-websocket compatible sync protocol
@@ -559,6 +757,11 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
 
             while True:
                 raw = await ws.receive_bytes()
+                # Drop oversized frames before parsing/applying so a malicious
+                # client cannot bloat the persisted Y.Doc or fan it out to peers.
+                # Legitimate Yjs updates are a few KB; the cap is very generous.
+                if len(raw) > max_ws_message_bytes:
+                    continue
                 parsed = _parse_message(raw)
                 if parsed is None:
                     continue
@@ -587,6 +790,11 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         finally:
             async with room_lock:
                 rooms[schedule_id].discard(ws)
+                # Free the in-memory doc/room when the last editor leaves;
+                # state is already persisted, so it reloads lazily on demand.
+                if not rooms[schedule_id]:
+                    rooms.pop(schedule_id, None)
+                    docs.pop(schedule_id, None)
 
     # -----------------------------------------------------------------------
     # JSON auth endpoints
@@ -594,6 +802,12 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
 
     @app.post("/api/auth/login")
     async def api_login(request: Request):
+        ip = _client_ip(request)
+        if _login_blocked(ip):
+            return JSONResponse(
+                {"error": "te veel pogingen, probeer later opnieuw"},
+                status_code=429,
+            )
         try:
             body = await request.json()
             name = str(body.get("name", "")).strip()
@@ -601,20 +815,20 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         except Exception:
             return JSONResponse({"error": "invalid request"}, status_code=400)
         if db_conn is None or _is_open():
-            # No auth configured — accept any credentials
-            token = secrets.token_urlsafe(32)
-            sessions[token] = 0
+            # No auth configured (dev/bootstrap) — accept any credentials
+            token = _new_session(0)
             resp = JSONResponse({"ok": True, "name": name or "instructor"})
-            resp.set_cookie("bsession", token, httponly=True, samesite="lax")
+            _set_session_cookie(resp, token)
             return resp
         member_id = await asyncio.to_thread(
             _db.verify_instructor_login, db_conn, name, password)
         if member_id is None:
+            _record_login_failure(ip)
             return JSONResponse({"error": "Onjuiste naam of wachtwoord."}, status_code=401)
-        token = secrets.token_urlsafe(32)
-        sessions[token] = member_id
+        login_failures.pop(ip, None)  # successful login clears the counter
+        token = _new_session(member_id)
         resp = JSONResponse({"ok": True, "name": name})
-        resp.set_cookie("bsession", token, httponly=True, samesite="lax")
+        _set_session_cookie(resp, token)
         return resp
 
     @app.post("/api/auth/logout")
@@ -623,7 +837,7 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         if token:
             sessions.pop(token, None)
         resp = JSONResponse({"ok": True})
-        resp.delete_cookie("bsession")
+        resp.delete_cookie("bsession", path="/")
         return resp
 
     @app.get("/api/auth/me")
@@ -633,12 +847,134 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         if member_id is None:
             return JSONResponse({"error": "not authenticated"}, status_code=401)
         if member_id == 0 or db_conn is None:
-            return {"member_id": 0, "name": "instructor"}
+            return {"member_id": 0, "name": "instructor", "is_admin": True}
         row = await asyncio.to_thread(lambda: db_conn.execute(
-            "SELECT m.name FROM member m JOIN instructor i ON i.member_id = m.id"
+            "SELECT m.name, i.is_admin"
+            " FROM member m JOIN instructor i ON i.member_id = m.id"
             " WHERE m.id=?", (member_id,)
         ).fetchone())
-        return {"member_id": member_id, "name": row["name"] if row else None}
+        is_admin = _is_open() or bool(row and row["is_admin"])
+        return {"member_id": member_id,
+                "name": row["name"] if row else None,
+                "is_admin": is_admin}
+
+    # -----------------------------------------------------------------------
+    # API: members — list and bulk-seed
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/members")
+    async def list_members_api():
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        return await asyncio.to_thread(_db.list_members, db_conn)
+
+    @app.get("/api/members/progression")
+    async def members_progression():
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        def _query(conn):
+            instructor_ids = {r[0] for r in conn.execute("SELECT member_id FROM instructor")}
+            seasons = [dict(r) for r in conn.execute("SELECT id, year FROM season ORDER BY year")]
+            enrollments = conn.execute(
+                "SELECT member_id, season_id, level FROM enrollment"
+            ).fetchall()
+            by_member = {}
+            for e in enrollments:
+                by_member.setdefault(e["member_id"], {})[e["season_id"]] = e["level"]
+            members = [
+                dict(r) for r in conn.execute(
+                    "SELECT id, name FROM member WHERE active=1 ORDER BY name"
+                )
+                if r["id"] not in instructor_ids
+            ]
+            return {
+                "seasons": seasons,
+                "members": [
+                    {"id": m["id"], "name": m["name"],
+                     "levels": {str(sid): lv for sid, lv in by_member.get(m["id"], {}).items()}}
+                    for m in members
+                ],
+            }
+        return await asyncio.to_thread(_query, db_conn)
+
+    @app.post("/api/instructors/{member_id}/set-admin")
+    async def set_instructor_admin(member_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        try:
+            body = await request.json()
+            is_admin = bool(body["is_admin"])
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        # Prevent an admin from removing their own admin status (lockout protection).
+        token = request.cookies.get("bsession")
+        if _auth_member(token) == member_id and not is_admin:
+            return JSONResponse({"error": "cannot remove own admin status"}, status_code=400)
+        row = db_conn.execute(
+            "SELECT 1 FROM instructor WHERE member_id=?", (member_id,)
+        ).fetchone()
+        if row is None:
+            return JSONResponse({"error": "not an instructor"}, status_code=404)
+        await asyncio.to_thread(_db.set_admin, db_conn, member_id, is_admin)
+        return {"ok": True}
+
+    @app.delete("/api/members/{member_id}")
+    async def delete_member_api(member_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        try:
+            await asyncio.to_thread(_db.delete_member, db_conn, member_id)
+            return {"ok": True}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except Exception as e:
+            return _server_error(e)
+
+    @app.put("/api/members/{member_id}")
+    async def rename_member_api(member_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        try:
+            body = await request.json()
+            name = str(body["name"]).strip()
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if not name:
+            return JSONResponse({"error": "name must not be empty"}, status_code=400)
+        try:
+            await asyncio.to_thread(_db.rename_member, db_conn, member_id, name)
+            return {"ok": True}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except Exception as e:
+            return _server_error(e)
+
+    @app.post("/api/members/import")
+    async def import_members_api(request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        oversized = _too_large(request)
+        if oversized is not None:
+            return oversized
+        raw = await request.body()
+        if len(raw) > max_upload_bytes:
+            return JSONResponse({"error": "payload too large"}, status_code=413)
+        ctype = request.headers.get("content-type", "")
+        if "multipart" in ctype:
+            raw = _extract_multipart(raw, ctype)
+        names = _parse_names_csv(raw.decode("utf-8", "replace"))
+        if not names:
+            return JSONResponse({"error": "no names found in upload"}, status_code=400)
+        result = await asyncio.to_thread(_db.seed_members, db_conn, names)
+        return result
 
     # -----------------------------------------------------------------------
     # API: health
@@ -646,7 +982,10 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
 
     @app.get("/api/health")
     async def api_health():
-        return {"status": "healthy", "timestamp": __import__("datetime").datetime.utcnow().isoformat(), "version": "1.0"}
+        from datetime import datetime, timezone
+        return {"status": "healthy",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "version": "1.0"}
 
     return app
 
@@ -654,6 +993,13 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(prog="boatsched-server")
@@ -679,10 +1025,52 @@ def main(argv=None) -> int:
                  diverse=a.diverse, adj=a.adj, stage_seconds=a.stage_seconds,
                  seconds=a.seconds, workers=a.workers)
     db_conn = _db.init_db(a.db) if a.db else None
-    app = create_app(cfg, db_conn)
+
+    # Production hardening is on by default whenever a database is configured
+    # (i.e. a real deployment). It can be relaxed via env vars for local runs.
+    production = db_conn is not None
+    require_auth = _env_bool("BOATSCHED_REQUIRE_AUTH", production)
+    secure_cookies = _env_bool("BOATSCHED_SECURE_COOKIES", production)
+    min_password_len = int(os.environ.get("BOATSCHED_MIN_PASSWORD_LEN",
+                                          "8" if production else "1"))
+    login_max_failures = int(os.environ.get("BOATSCHED_LOGIN_MAX_FAIL", "10"))
+
+    # Seed/refresh the bootstrap admin from env so there is never an anonymous
+    # access window. Migrations have already run inside create_app() below, so
+    # do the seeding after the app is built.
+    app = create_app(
+        cfg, db_conn,
+        require_auth=require_auth,
+        secure_cookies=secure_cookies,
+        min_password_len=min_password_len,
+        login_max_failures=login_max_failures,
+    )
+
+    if db_conn is not None:
+        admin_name = os.environ.get("BOATSCHED_ADMIN")
+        admin_pw = os.environ.get("BOATSCHED_ADMIN_PW")
+        if admin_name and admin_pw:
+            try:
+                seeded = _db.ensure_admin(db_conn, admin_name, admin_pw)
+                print(f"  bootstrap admin '{admin_name}' "
+                      f"{'seeded' if seeded else 'present'}")
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[error] admin bootstrap failed: {exc!r}", file=sys.stderr)
+                return 1
+        elif require_auth:
+            has_login = db_conn.execute(
+                "SELECT 1 FROM instructor WHERE password_hash IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if not has_login:
+                print("[warn] require_auth is on but no admin exists and "
+                      "BOATSCHED_ADMIN/BOATSCHED_ADMIN_PW are unset — nobody "
+                      "can log in. Set them and restart.", file=sys.stderr)
+
     print(f"boatsched server at http://localhost:{a.port}")
     print(f"  boats={cfg.boats} levels={list(cfg.levels)}")
     print(f"  restricted={list(cfg.restricted)} diverse={list(cfg.diverse)}")
+    print(f"  require_auth={require_auth} secure_cookies={secure_cookies} "
+          f"min_password_len={min_password_len}")
     print("Ctrl-C to stop.")
     uvicorn.run(app, host=a.host, port=a.port)
     return 0

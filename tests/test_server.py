@@ -33,6 +33,11 @@ def srv():
 def srv_db(tmp_path_factory):
     db_path = str(tmp_path_factory.mktemp("db") / "boatsched.db")
     db_conn = _db.init_db(db_path)
+    # Carol and Dave are returning (non-k) members in ROSTER_CSV; they must
+    # exist in the member table before any solve uploads the CSV.
+    db_conn.executemany("INSERT INTO member (name) VALUES (?)",
+                        [("Carol",), ("Dave",)])
+    db_conn.commit()
     cfg = Config(boats=2, levels=["k", "b"],
                  restricted=["Sat"], diverse=["Fri"],
                  stage_seconds=15, seconds=15)

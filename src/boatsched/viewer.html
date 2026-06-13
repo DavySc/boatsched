@@ -124,11 +124,13 @@
   #user-bar{display:flex;gap:8px;justify-content:flex-end;margin-bottom:10px}
   /* Password modal */
   .modal-overlay{position:fixed;inset:0;background:rgba(13,36,56,.45);z-index:200;
-    display:flex;align-items:center;justify-content:center}
+    display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:16px 0}
   .modal-overlay.hidden{display:none}
-  .modal-card{background:#fff;border-radius:14px;padding:28px 30px;max-width:420px;
-    width:calc(100% - 32px);box-shadow:0 8px 32px rgba(13,36,56,.2)}
-  .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  .modal-card{background:#fff;border-radius:14px;padding:24px 24px 28px;max-width:440px;
+    width:calc(100% - 32px);box-shadow:0 8px 32px rgba(13,36,56,.2);
+    display:flex;flex-direction:column;max-height:calc(100dvh - 32px);margin:auto}
+  .modal-body{overflow-y:auto;flex:1;min-height:0}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-shrink:0}
   .modal-head h2{font-size:20px;font-weight:800}
   .inst-list{list-style:none;display:flex;flex-direction:column;gap:0}
   .inst-row{display:flex;align-items:center;gap:10px;padding:9px 0;
@@ -143,6 +145,16 @@
     background:#fdf9f4}
   .pwd-input:focus{outline:none;border-color:var(--accent2)}
   .modal-actions{display:flex;gap:8px}
+  /* ── Member combobox ─────────────────────────────────────── */
+  .combo-wrap{position:relative;margin-bottom:12px}
+  .combo-wrap .pwd-input{margin-bottom:0}
+  .combo-list{position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:300;
+    background:#fff;border:1px solid var(--line);border-radius:8px;
+    max-height:200px;overflow-y:auto;padding:4px 0;
+    box-shadow:0 4px 16px rgba(13,36,56,.14);list-style:none}
+  .combo-list.hidden{display:none}
+  .combo-list li{padding:8px 12px;font-size:14px;cursor:pointer;color:var(--ink)}
+  .combo-list li:hover,.combo-list li.active{background:var(--paper2)}
   /* ── Login overlay ────────────────────────────────────────── */
   #login-overlay{position:fixed;inset:0;
     background:radial-gradient(circle at 18% 12%,rgba(31,122,140,.08),transparent 40%),
@@ -201,6 +213,23 @@
     border-radius:8px;width:100%;min-height:80px;background:#fdf9f4;color:var(--ink);
     resize:vertical;display:block}
   .eval-notes:focus{outline:none;border-color:var(--accent2)}
+  /* ── Admin badge ─────────────────────────────────────────── */
+  .icon-btn{border:none;background:transparent;cursor:pointer;padding:4px 6px;border-radius:4px;color:var(--ink);opacity:.6;line-height:1;font-size:15px}
+  .icon-btn:hover{opacity:1;background:rgba(0,0,0,.07)}
+  .icon-btn.delete:hover{color:var(--accent);opacity:1}
+  /* progression table */
+  .prog-table{border-collapse:collapse;width:100%;font-size:13px}
+  .prog-table th,.prog-table td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--paper2);white-space:nowrap}
+  .prog-table th{font-weight:700;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink2);position:sticky;top:0;background:#fff;z-index:1}
+  .prog-table td:first-child{font-weight:600;position:sticky;left:0;background:#fff;z-index:1}
+  .prog-table th:first-child{z-index:2}
+  .prog-table tr:hover td{background:#fdf9f4}
+  .prog-table tr:hover td:first-child{background:#fdf9f4}
+  .prog-wrap{overflow-x:auto}
+  .lv-pill{display:inline-block;padding:2px 8px;border-radius:20px;color:#fff;font-size:11px;font-weight:700;letter-spacing:.04em}
+  .badge-admin{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;
+    text-transform:uppercase;padding:1px 5px;border-radius:4px;vertical-align:middle;
+    background:var(--accent2);color:#fff;margin-left:4px}
   /* ── Clickable name buttons ───────────────────────────────── */
   .name-btn{background:none;border:none;font-family:inherit;font-size:inherit;
     font-weight:700;color:var(--ink);cursor:pointer;padding:2px 4px;border-radius:5px;
@@ -225,6 +254,8 @@
     .controls{gap:8px}
     .eval-hdr-bar{gap:8px;padding:10px 14px}
     .eval-name{font-size:16px}
+    .modal-overlay{align-items:flex-end;padding:0}
+    .modal-card{border-radius:18px 18px 0 0;max-height:90dvh;width:100%;max-width:100%;margin:0}
   }
   /* ── Touch targets ───────────────────────────────────────── */
   @media(pointer:coarse){
@@ -260,6 +291,7 @@
   <header>
     <div id="user-bar" class="hidden">
       <button id="manage-pwd-btn" class="btn-sm">Wachtwoorden</button>
+      <button id="members-modal-btn" class="btn-sm">Leden</button>
       <button id="logout-btn" class="btn-sm">Uitloggen</button>
     </div>
     <div class="kicker">Vloot Rooster &middot; Dagindeling</div>
@@ -329,32 +361,74 @@
   <footer>Lokaal geserveerd &middot; geen data verlaat uw machine</footer>
 </div>
 
+<!-- Member management modal -->
+<div id="members-modal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Leden</h2>
+      <button id="members-modal-close" class="btn-sm">Sluiten</button>
+    </div>
+    <div class="seg" style="margin-bottom:14px;flex-shrink:0">
+      <button id="members-tab-list" class="active">Lijst</button>
+      <button id="members-tab-prog">Voortgang</button>
+    </div>
+    <!-- tab: list -->
+    <div id="members-pane-list" class="modal-body">
+      <div id="members-count-bar" style="font-size:13px;margin-bottom:8px"></div>
+      <ul id="member-list" class="inst-list" style="margin-bottom:0"></ul>
+      <div class="modal-sep"></div>
+      <p style="font-size:14px;color:var(--ink2);margin-bottom:10px">
+        CSV met een <code>name</code> kolom importeren om leden toe te voegen.
+      </p>
+      <input type="file" id="members-file" accept=".csv,text/csv" style="margin-bottom:8px;display:block">
+      <div class="modal-actions">
+        <button id="members-import-btn" class="btn-sm primary">Importeren</button>
+      </div>
+      <p id="members-result" class="hidden" style="margin-top:10px;font-size:14px;color:#2a6a2a"></p>
+      <p id="members-err" class="err hidden" style="margin-top:10px"></p>
+    </div>
+    <!-- tab: progression -->
+    <div id="members-pane-prog" class="modal-body hidden">
+      <div id="prog-table-wrap"></div>
+    </div>
+  </div>
+</div>
+
 <!-- Password management modal -->
 <div id="pwd-modal" class="modal-overlay hidden">
   <div class="modal-card">
     <div class="modal-head">
-      <h2>Instructeur wachtwoorden</h2>
+      <h2 id="pwd-modal-title">Instructeur beheer</h2>
       <button id="pwd-modal-close" class="btn-sm">Sluiten</button>
     </div>
-    <ul id="inst-list" class="inst-list"></ul>
-    <div id="pwd-form" class="hidden">
-      <div class="modal-sep"></div>
-      <p id="pwd-form-label" class="pwd-form-label"></p>
-      <input type="password" id="pwd-input" class="pwd-input" placeholder="Nieuw wachtwoord">
-      <div class="modal-actions">
-        <button id="pwd-save-btn" class="btn-sm primary">Opslaan</button>
-        <button id="pwd-cancel-btn" class="btn-sm">Annuleren</button>
+    <div class="modal-body">
+      <div id="inst-list-section">
+        <ul id="inst-list" class="inst-list"></ul>
       </div>
-      <p id="pwd-err" class="err hidden" style="margin-top:10px"></p>
+      <div id="pwd-form" class="hidden">
+        <div class="modal-sep"></div>
+        <p id="pwd-form-label" class="pwd-form-label"></p>
+        <input type="password" id="pwd-input" class="pwd-input" placeholder="Nieuw wachtwoord">
+        <div class="modal-actions">
+          <button id="pwd-save-btn" class="btn-sm primary">Opslaan</button>
+          <button id="pwd-cancel-btn" class="btn-sm">Annuleren</button>
+        </div>
+        <p id="pwd-err" class="err hidden" style="margin-top:10px"></p>
+      </div>
+      <div id="inst-add-section">
+        <div class="modal-sep"></div>
+        <p class="pwd-form-label">Nieuwe instructeur toevoegen</p>
+        <div class="combo-wrap">
+          <input type="text" id="new-inst-name" class="pwd-input" placeholder="Zoek op naam…" autocomplete="off">
+          <ul class="combo-list hidden" id="member-combo-list"></ul>
+        </div>
+        <input type="password" id="new-inst-pw" class="pwd-input" placeholder="Wachtwoord" style="margin-top:8px">
+        <div class="modal-actions" style="margin-top:12px">
+          <button id="add-inst-btn" class="btn-sm primary">Instructeur toevoegen</button>
+        </div>
+        <p id="add-inst-err" class="err hidden" style="margin-top:10px"></p>
+      </div>
     </div>
-    <div class="modal-sep"></div>
-    <p class="pwd-form-label">Nieuwe instructeur toevoegen</p>
-    <input type="text" id="new-inst-name" class="pwd-input" placeholder="Naam">
-    <input type="password" id="new-inst-pw" class="pwd-input" placeholder="Wachtwoord" style="margin-top:8px">
-    <div class="modal-actions" style="margin-top:12px">
-      <button id="add-inst-btn" class="btn-sm primary">Instructeur toevoegen</button>
-    </div>
-    <p id="add-inst-err" class="err hidden" style="margin-top:10px"></p>
   </div>
 </div>
 
@@ -370,6 +444,7 @@ let rows=[],stats=null;
 let HAS_DB=false,selectedSeason=null,scheduleMode=null,currentScheduleId=null;
 let scheduleStartDate=null;
 let BOATS={};
+let IS_ADMIN=false,CURRENT_MEMBER_ID=null,CURRENT_NAME=null;
 
 // Collaborative editing state
 let collabMode=false,ydoc=null,yprovider=null,ySchedule=null;
@@ -397,13 +472,20 @@ async function init(){
 async function loadAppData(){
   $("login-overlay").classList.add("hidden");
   try{
-    const[boatsResp,cfgResp]=await Promise.all([
+    const[boatsResp,cfgResp,meResp]=await Promise.all([
       fetch("/boats").catch(()=>null),
       fetch("/config").catch(()=>null),
+      fetch("/api/auth/me").catch(()=>null),
     ]);
     if(boatsResp&&boatsResp.ok){
       const boats=await boatsResp.json();
       boats.forEach(b=>{BOATS[b.id]=b.name||null;});
+    }
+    if(meResp&&meResp.ok){
+      const me=await meResp.json();
+      IS_ADMIN=me.is_admin||false;
+      CURRENT_MEMBER_ID=me.member_id||null;
+      CURRENT_NAME=me.name||null;
     }
     if(cfgResp&&cfgResp.ok){
       const c=await cfgResp.json();
@@ -411,6 +493,7 @@ async function loadAppData(){
       RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
       LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);
       if(c.db){HAS_DB=true;$("season-bar").classList.remove("hidden");$("user-bar").classList.remove("hidden");loadSeasons();}
+      _syncAdminUI();
       _syncDrop();
     }else{
       RESTRICTED=new Set(CFG.restricted);DIVERSE=new Set(CFG.diverse);
@@ -420,6 +503,12 @@ async function loadAppData(){
     RESTRICTED=new Set(CFG.restricted);DIVERSE=new Set(CFG.diverse);
     LV_RANK={};CFG.levels.forEach((l,i)=>LV_RANK[l]=i);
   }
+}
+
+function _syncAdminUI(){
+  // Admin-only controls in the header bar
+  $("members-modal-btn").classList.toggle("hidden",!IS_ADMIN||!HAS_DB);
+  $("new-season-btn").classList.toggle("hidden",!IS_ADMIN);
 }
 
 async function doLogin(){
@@ -466,7 +555,8 @@ function loadSeasons(){
 function loadSchedules(sid){
   fetch("/schedules?season_id="+sid).then(r=>r.json()).then(scheds=>{
     const pick=$("schedule-pick");
-    pick.innerHTML='<option value="">— selecteer —</option><option value="new">+ Nieuw rooster uploaden</option>';
+    const newOpt=IS_ADMIN?'<option value="new">+ Nieuw rooster uploaden</option>':'';
+    pick.innerHTML='<option value="">— selecteer —</option>'+newOpt;
     scheds.forEach(s=>{
       const o=document.createElement("option");
       o.value=s.id;o.textContent=(s.created||"").slice(0,16);pick.appendChild(o);
@@ -488,7 +578,7 @@ function _syncDrop(){
   if(!HAS_DB)return;
   const seasonOk=!!selectedSeason;
   const schedOk=scheduleMode==="new";
-  const locked=!seasonOk||!schedOk;
+  const locked=!seasonOk||!schedOk||!IS_ADMIN;
   drop.style.opacity=locked?"0.45":"";
   drop.style.pointerEvents=locked?"none":"";
   $("season-hint").classList.toggle("hidden",seasonOk);
@@ -1221,6 +1311,43 @@ $("login-name").addEventListener("keydown",e=>{if(e.key==="Enter")$("login-pw").
 
 // ── Auth / password management ─────────────────────────────────
 let _pwdTarget=null;
+let _memberList=[],_selectedMemberName=null,_comboActiveIdx=-1;
+
+async function loadMemberList(){
+  try{
+    const r=await fetch("/api/members");
+    if(r.ok)_memberList=await r.json();
+  }catch(e){}
+}
+function _renderCombo(q){
+  const list=$("member-combo-list");
+  _comboActiveIdx=-1;
+  const lower=q.toLowerCase();
+  const hits=_memberList.filter(m=>m.name.toLowerCase().includes(lower));
+  list.innerHTML="";
+  if(!q||!hits.length){list.classList.add("hidden");return;}
+  hits.slice(0,30).forEach(m=>{
+    const li=document.createElement("li");
+    li.textContent=m.name;
+    li.addEventListener("mousedown",e=>{e.preventDefault();_selectMember(m.name);});
+    list.appendChild(li);
+  });
+  list.classList.remove("hidden");
+}
+function _selectMember(name){
+  _selectedMemberName=name;
+  $("new-inst-name").value=name;
+  $("member-combo-list").classList.add("hidden");
+  _comboActiveIdx=-1;
+}
+function _comboMove(delta){
+  const items=[...$("member-combo-list").querySelectorAll("li")];
+  if(!items.length)return;
+  items.forEach(li=>li.classList.remove("active"));
+  _comboActiveIdx=Math.max(0,Math.min(items.length-1,_comboActiveIdx+delta));
+  items[_comboActiveIdx].classList.add("active");
+  items[_comboActiveIdx].scrollIntoView({block:"nearest"});
+}
 
 function doLogout(){
   fetch("/api/auth/logout",{method:"POST"}).finally(()=>{
@@ -1228,6 +1355,7 @@ function doLogout(){
     rows=[];stats=null;currentScheduleId=null;
     scheduleMode=null;scheduleStartDate=null;
     HAS_DB=false;selectedSeason=null;BOATS={};
+    IS_ADMIN=false;CURRENT_MEMBER_ID=null;CURRENT_NAME=null;
     $("schedule-bar").classList.add("hidden");
     $("schedule-pick").innerHTML="";
     $("season-bar").classList.add("hidden");
@@ -1239,7 +1367,24 @@ function doLogout(){
 }
 
 async function openPwdModal(){
-  await loadInstructors();
+  $("pwd-err").classList.add("hidden");
+  if(IS_ADMIN){
+    $("pwd-modal-title").textContent="Instructeur beheer";
+    $("inst-list-section").style.display="";
+    $("inst-add-section").style.display="";
+    $("pwd-form").classList.add("hidden");
+    $("pwd-input").value="";
+    _pwdTarget=null;
+    _selectedMemberName=null;
+    $("new-inst-name").value="";
+    $("member-combo-list").classList.add("hidden");
+    await Promise.all([loadMemberList(),loadInstructors()]);
+  }else{
+    $("pwd-modal-title").textContent="Mijn wachtwoord";
+    $("inst-list-section").style.display="none";
+    $("inst-add-section").style.display="none";
+    startSetPassword(CURRENT_NAME);
+  }
   $("pwd-modal").classList.remove("hidden");
 }
 function closePwdModal(){
@@ -1262,13 +1407,33 @@ async function loadInstructors(){
     const statusClass=inst.has_password?" set":"";
     const statusText=inst.has_password?"Wachtwoord ingesteld":"Geen wachtwoord";
     const btnLabel=inst.has_password?"Wijzigen":"Instellen";
-    li.innerHTML=`<span class="inst-name">${escH(inst.name)}</span>`+
+    const adminBadge=inst.is_admin?'<span class="badge-admin">admin</span>':'';
+    li.innerHTML=`<span class="inst-name">${escH(inst.name)}${adminBadge}</span>`+
       `<span class="inst-status${statusClass}">${statusText}</span>`;
-    const btn=document.createElement("button");
-    btn.className="btn-sm";btn.textContent=btnLabel;
-    btn.addEventListener("click",()=>startSetPassword(inst.name));
-    li.appendChild(btn);ul.appendChild(li);
+    const pwBtn=document.createElement("button");
+    pwBtn.className="btn-sm";pwBtn.textContent=btnLabel;
+    pwBtn.addEventListener("click",()=>startSetPassword(inst.name));
+    li.appendChild(pwBtn);
+    // Admin toggle — admins can promote/demote others but not themselves
+    if(inst.id!==CURRENT_MEMBER_ID){
+      const adminBtn=document.createElement("button");
+      adminBtn.className="btn-sm";
+      adminBtn.textContent=inst.is_admin?"Admin verwijderen":"Admin maken";
+      adminBtn.style.marginLeft="6px";
+      adminBtn.addEventListener("click",()=>toggleAdmin(inst.id,!inst.is_admin));
+      li.appendChild(adminBtn);
+    }
+    ul.appendChild(li);
   });
+}
+async function toggleAdmin(memberId,makeAdmin){
+  const r=await fetch(`/api/instructors/${memberId}/set-admin`,{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({is_admin:makeAdmin}),
+  });
+  const data=await r.json();
+  if(data.ok){await loadInstructors();}
+  else{alert(data.error||"Admin status wijzigen mislukt.");}
 }
 function startSetPassword(name){
   _pwdTarget=name;
@@ -1304,7 +1469,7 @@ async function submitPassword(){
   }
 }
 async function addInstructor(){
-  const name=$("new-inst-name").value.trim();
+  const name=(_selectedMemberName||$("new-inst-name").value).trim();
   const pw=$("new-inst-pw").value;
   $("add-inst-err").classList.add("hidden");
   if(!name||!pw){
@@ -1320,12 +1485,171 @@ async function addInstructor(){
   $("add-inst-btn").disabled=false;
   if(data.ok){
     $("new-inst-name").value="";$("new-inst-pw").value="";
+    _selectedMemberName=null;$("member-combo-list").classList.add("hidden");
     await loadInstructors();
   }else{
     $("add-inst-err").textContent=data.error||"Instructeur toevoegen mislukt.";
     $("add-inst-err").classList.remove("hidden");
   }
 }
+
+// ── Member management modal ────────────────────────────────────
+let _editingMemberId=null;
+let _membersActiveTab="list";
+
+function _switchMembersTab(tab){
+  _membersActiveTab=tab;
+  $("members-tab-list").classList.toggle("active",tab==="list");
+  $("members-tab-prog").classList.toggle("active",tab==="prog");
+  $("members-pane-list").classList.toggle("hidden",tab!=="list");
+  $("members-pane-prog").classList.toggle("hidden",tab!=="prog");
+  if(tab==="prog") renderProgression();
+}
+
+async function openMembersModal(){
+  $("members-result").classList.add("hidden");
+  $("members-err").classList.add("hidden");
+  $("members-file").value="";
+  _editingMemberId=null;
+  _membersActiveTab="list";
+  _switchMembersTab("list");
+  $("members-modal").classList.remove("hidden");
+  await loadMemberList();
+  renderMemberList();
+}
+function closeMembersModal(){
+  _editingMemberId=null;
+  $("members-modal").classList.add("hidden");
+  $("members-file").value="";
+}
+function renderMemberList(){
+  const ul=$("member-list");ul.innerHTML="";
+  $("members-count-bar").textContent=`${_memberList.length} leden`;
+  if(!_memberList.length){
+    ul.innerHTML='<li style="padding:10px 0;color:#8a7a62;font-size:14px">Geen leden in database.</li>';
+    return;
+  }
+  _memberList.forEach(m=>ul.appendChild(_mkMemberRow(m)));
+}
+function _mkMemberRow(m){
+  const li=document.createElement("li");li.className="inst-row";
+  if(_editingMemberId===m.id){
+    const inp=document.createElement("input");
+    inp.type="text";inp.value=m.name;
+    inp.style.cssText="flex:1;font-family:inherit;font-size:14px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:#fdf9f4;color:var(--ink)";
+    const save=document.createElement("button");save.className="btn-sm primary";save.textContent="Opslaan";
+    const cancel=document.createElement("button");cancel.className="btn-sm";cancel.textContent="Annuleren";
+    const errSpan=document.createElement("span");
+    errSpan.style.cssText="font-size:12px;color:var(--accent);margin-left:6px";
+    save.addEventListener("click",()=>saveMemberRename(m.id,inp.value,errSpan));
+    cancel.addEventListener("click",cancelMemberEdit);
+    inp.addEventListener("keydown",e=>{
+      if(e.key==="Enter")saveMemberRename(m.id,inp.value,errSpan);
+      if(e.key==="Escape")cancelMemberEdit();
+    });
+    li.append(inp,save,cancel,errSpan);
+    requestAnimationFrame(()=>{inp.focus();inp.select();});
+  }else{
+    const editBtn=document.createElement("button");editBtn.className="icon-btn";editBtn.title="Naam bewerken";editBtn.textContent="✏";
+    editBtn.addEventListener("click",()=>{_editingMemberId=m.id;renderMemberList();});
+    const nameSpan=document.createElement("span");nameSpan.className="inst-name";nameSpan.textContent=m.name;
+    const delBtn=document.createElement("button");delBtn.className="icon-btn delete";delBtn.title="Verwijderen";delBtn.textContent="🗑";
+    delBtn.addEventListener("click",()=>deleteMember(m.id,m.name));
+    li.append(editBtn,nameSpan,delBtn);
+  }
+  return li;
+}
+async function saveMemberRename(id,newName,errSpan){
+  newName=newName.trim();
+  if(!newName){errSpan.textContent="Naam mag niet leeg zijn.";return;}
+  const r=await fetch(`/api/members/${id}`,{
+    method:"PUT",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:newName}),
+  });
+  const data=await r.json();
+  if(data.ok){
+    _editingMemberId=null;
+    await loadMemberList();
+    renderMemberList();
+  }else{
+    errSpan.textContent=data.error||"Opslaan mislukt.";
+  }
+}
+function cancelMemberEdit(){_editingMemberId=null;renderMemberList();}
+async function deleteMember(id,name){
+  if(!confirm(`Lid "${name}" verwijderen?`))return;
+  const r=await fetch(`/api/members/${id}`,{method:"DELETE"});
+  const data=await r.json();
+  if(data.ok){await loadMemberList();renderMemberList();}
+  else{alert(data.error||"Verwijderen mislukt.");}
+}
+
+const LV_LABEL={k:"Ketelbinkie",b:"Bemanning",A:"A",B:"B"};
+const LV_COLOR={k:"var(--k)",b:"var(--b)",A:"var(--A)",B:"var(--B)"};
+
+async function renderProgression(){
+  const wrap=$("prog-table-wrap");
+  wrap.innerHTML='<p style="color:var(--ink2);font-size:14px">Laden…</p>';
+  let data;
+  try{
+    const r=await fetch("/api/members/progression");
+    data=await r.json();
+  }catch(e){
+    wrap.innerHTML='<p class="err">Laden mislukt.</p>';return;
+  }
+  const {seasons,members}=data;
+  if(!seasons.length){
+    wrap.innerHTML='<p style="color:var(--ink2);font-size:14px">Nog geen seizoenen aangemaakt.</p>';return;
+  }
+  if(!members.length){
+    wrap.innerHTML='<p style="color:var(--ink2);font-size:14px">Geen leden zonder instructeursrol.</p>';return;
+  }
+  let html='<div class="prog-wrap"><table class="prog-table"><thead><tr><th>Naam</th>';
+  for(const s of seasons) html+=`<th>${s.year}</th>`;
+  html+='</tr></thead><tbody>';
+  for(const m of members){
+    html+=`<tr><td>${escH(m.name)}</td>`;
+    for(const s of seasons){
+      const lv=m.levels[String(s.id)]||"";
+      html+=`<td>${lv?`<span class="lv-pill" style="background:${LV_COLOR[lv]}">${escH(lv)}</span>`:'<span style="color:var(--ink2);font-size:12px">—</span>'}</td>`;
+    }
+    html+='</tr>';
+  }
+  html+='</tbody></table></div>';
+  wrap.innerHTML=html;
+}
+
+async function importMembers(){
+  const file=$("members-file").files[0];
+  $("members-result").classList.add("hidden");
+  $("members-err").classList.add("hidden");
+  if(!file){
+    $("members-err").textContent="Kies eerst een CSV bestand.";
+    $("members-err").classList.remove("hidden");return;
+  }
+  $("members-import-btn").disabled=true;
+  const fd=new FormData();fd.append("file",file);
+  try{
+    const r=await fetch("/api/members/import",{method:"POST",body:fd});
+    const data=await r.json();
+    if(!r.ok){throw new Error(data.error||r.statusText);}
+    $("members-result").textContent=
+      `✓ ${data.created} toegevoegd, ${data.existing} al aanwezig — totaal ${data.total} leden`;
+    $("members-result").classList.remove("hidden");
+    await loadMemberList();renderMemberList();
+  }catch(e){
+    $("members-err").textContent="Import mislukt: "+e.message;
+    $("members-err").classList.remove("hidden");
+  }
+  $("members-import-btn").disabled=false;
+}
+
+$("members-modal-btn").addEventListener("click",openMembersModal);
+$("members-modal-close").addEventListener("click",closeMembersModal);
+$("members-modal").addEventListener("click",e=>{if(e.target===$("members-modal"))closeMembersModal();});
+$("members-import-btn").addEventListener("click",importMembers);
+$("members-tab-list").addEventListener("click",()=>_switchMembersTab("list"));
+$("members-tab-prog").addEventListener("click",()=>_switchMembersTab("prog"));
 
 $("manage-pwd-btn").addEventListener("click",openPwdModal);
 $("logout-btn").addEventListener("click",doLogout);
@@ -1336,6 +1660,18 @@ $("pwd-input").addEventListener("keydown",e=>{if(e.key==="Enter")submitPassword(
 $("add-inst-btn").addEventListener("click",addInstructor);
 $("new-inst-pw").addEventListener("keydown",e=>{if(e.key==="Enter")addInstructor();});
 $("pwd-modal").addEventListener("click",e=>{if(e.target===$("pwd-modal"))closePwdModal();});
+$("new-inst-name").addEventListener("input",e=>{_selectedMemberName=null;_renderCombo(e.target.value);});
+$("new-inst-name").addEventListener("focus",e=>{if(e.target.value)_renderCombo(e.target.value);});
+$("new-inst-name").addEventListener("blur",()=>{setTimeout(()=>$("member-combo-list").classList.add("hidden"),150);});
+$("new-inst-name").addEventListener("keydown",e=>{
+  const open=!$("member-combo-list").classList.contains("hidden");
+  if(e.key==="ArrowDown"){e.preventDefault();if(open)_comboMove(1);else _renderCombo($("new-inst-name").value);}
+  else if(e.key==="ArrowUp"){e.preventDefault();_comboMove(-1);}
+  else if(e.key==="Enter"){
+    const active=$("member-combo-list").querySelector("li.active");
+    if(active){e.preventDefault();_selectMember(active.textContent);}
+  }else if(e.key==="Escape"){$("member-combo-list").classList.add("hidden");_comboActiveIdx=-1;}
+});
 
 $("schedule-start-date").addEventListener("change",e=>{
   if(!currentScheduleId)return;

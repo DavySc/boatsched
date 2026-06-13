@@ -123,6 +123,33 @@ def _create_tables(conn: sqlite3.Connection) -> None:
 # Idempotent migrations (called at server startup for existing databases)
 # ---------------------------------------------------------------------------
 
+def add_admin_column(conn: sqlite3.Connection) -> None:
+    """Add is_admin BOOLEAN to instructor table (idempotent)."""
+    try:
+        conn.execute(
+            "ALTER TABLE instructor ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def auto_grant_first_admin(conn: sqlite3.Connection) -> None:
+    """If no admin exists yet, promote all current instructors to admin.
+
+    Handles existing deployments upgrading to role-based access: instructors
+    that were created before admin roles existed had unrestricted access, so
+    they all become admins.
+    """
+    has_admin = conn.execute(
+        "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1"
+    ).fetchone()
+    if has_admin:
+        return
+    conn.execute("UPDATE instructor SET is_admin=1")
+    conn.commit()
+
+
 def add_yjs_state_column(conn: sqlite3.Connection) -> None:
     """Add yjs_state BLOB to schedule table (idempotent)."""
     try:
@@ -224,34 +251,103 @@ def drop_legacy_camp_tables(conn: sqlite3.Connection) -> None:
 
 def add_or_update_members(conn: sqlite3.Connection, members: list,
                           season_id=None) -> None:
-    """Upsert member names; if season_id given, also upsert enrollment levels.
+    """Upsert members from a roster; if season_id given, also upsert enrollments.
 
     members: list of (name, level) tuples.
     season_id: if provided, creates/updates an enrollment row for each member
                in that season with the corresponding level.
+
+    Level 'k' entries are treated as new participants and are inserted into
+    the member table automatically (INSERT OR IGNORE).  All other levels are
+    treated as returning participants who must already exist in the member
+    table; a missing name raises RuntimeError so a silently shorter roster
+    is never handed to the solver.
     """
-    # Insert members by name only — level no longer lives on member.
+    # Auto-create members for k-level (new participants this season).
     conn.executemany(
-        "INSERT INTO member (name) VALUES (?)"
-        " ON CONFLICT(name) DO NOTHING",
-        [(name,) for name, _ in members],
+        "INSERT INTO member (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
+        [(name,) for name, level in members if level == "k"],
     )
     conn.commit()
 
+    # Resolve member IDs; non-k members must already be in the table.
+    id_map: dict[str, int] = {}
+    missing = []
+    for name, level in members:
+        row = conn.execute(
+            "SELECT id FROM member WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            missing.append(f"'{name}' (level '{level}')")
+        else:
+            id_map[name] = row["id"]
+    if missing:
+        raise RuntimeError(
+            "returning members not found in member table: "
+            + ", ".join(missing)
+            + "; only 'k'-level entries are auto-created"
+        )
+
     if season_id is not None:
         for name, level in members:
-            row = conn.execute(
-                "SELECT id FROM member WHERE name = ?", (name,)
-            ).fetchone()
-            if row is None:
-                raise RuntimeError(f"member '{name}' not found after upsert")
             conn.execute(
                 "INSERT INTO enrollment (member_id, season_id, level)"
                 " VALUES (?, ?, ?)"
                 " ON CONFLICT(member_id, season_id) DO UPDATE SET level = excluded.level",
-                (row["id"], season_id, level),
+                (id_map[name], season_id, level),
             )
         conn.commit()
+
+
+def seed_members(conn: sqlite3.Connection, names: list) -> dict:
+    """INSERT OR IGNORE a list of names into the member table.
+
+    Unlike add_or_update_members this is a one-shot initialization: every name
+    is treated as potentially new — no level semantics, no enrollment.
+    Returns {"created": int, "existing": int, "total": int}.
+    """
+    clean = [n.strip() for n in names if n and str(n).strip()]
+    if not clean:
+        total = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+        return {"created": 0, "existing": 0, "total": total}
+    before = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+    conn.executemany(
+        "INSERT OR IGNORE INTO member (name) VALUES (?)", [(n,) for n in clean]
+    )
+    conn.commit()
+    after = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+    created = after - before
+    return {"created": created, "existing": len(clean) - created, "total": after}
+
+
+def list_members(conn: sqlite3.Connection) -> list:
+    """Return all active members ordered by name."""
+    return [{"id": r["id"], "name": r["name"]}
+            for r in conn.execute(
+                "SELECT id, name FROM member WHERE active=1 ORDER BY name"
+            )]
+
+
+def delete_member(conn: sqlite3.Connection, member_id: int) -> None:
+    """Soft-delete a member (sets active=0). Raises ValueError if they are an instructor."""
+    if conn.execute(
+        "SELECT 1 FROM instructor WHERE member_id=?", (member_id,)
+    ).fetchone():
+        raise ValueError("lid is een instructeur — verwijder eerst de instructeursrol")
+    conn.execute("UPDATE member SET active=0 WHERE id=?", (member_id,))
+    conn.commit()
+
+
+def rename_member(conn: sqlite3.Connection, member_id: int, name: str) -> None:
+    """Rename a member. Raises ValueError on empty name or name collision."""
+    name = name.strip()
+    if not name:
+        raise ValueError("name must not be empty")
+    try:
+        conn.execute("UPDATE member SET name=? WHERE id=?", (name, member_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise ValueError(f"naam '{name}' bestaat al")
 
 
 def add_enrollment(conn: sqlite3.Connection, member_id: int,
@@ -422,11 +518,54 @@ def verify_instructor_login(conn: sqlite3.Connection, name: str, password: str):
 
 def list_instructors(conn: sqlite3.Connection) -> list:
     return [dict(r) for r in conn.execute(
-        "SELECT i.member_id AS id, m.name,"
+        "SELECT i.member_id AS id, m.name, i.is_admin,"
         " (i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL) AS has_password"
         " FROM instructor i JOIN member m ON m.id = i.member_id"
         " ORDER BY m.name"
     )]
+
+
+def set_admin(conn: sqlite3.Connection, member_id: int, is_admin: bool) -> None:
+    """Set the is_admin flag for an instructor."""
+    conn.execute(
+        "UPDATE instructor SET is_admin=? WHERE member_id=?",
+        (1 if is_admin else 0, member_id),
+    )
+    conn.commit()
+
+
+def ensure_admin(conn: sqlite3.Connection, name: str, password: str) -> bool:
+    """Seed a bootstrap admin instructor (idempotent).
+
+    Ensures `name` exists as a member, is an admin instructor, and has a
+    password. The password is set only if the instructor does not already
+    have one, so a UI-changed password survives restarts. Returns True if a
+    password was set (first-time seed), False if the admin already existed.
+    """
+    name = (name or "").strip()
+    if not name or not password:
+        raise ValueError("admin name and password are required")
+    row = conn.execute("SELECT id FROM member WHERE name=?", (name,)).fetchone()
+    member_id = row["id"] if row else conn.execute(
+        "INSERT INTO member (name) VALUES (?)", (name,)
+    ).lastrowid
+    inst = conn.execute(
+        "SELECT password_hash FROM instructor WHERE member_id=?", (member_id,)
+    ).fetchone()
+    if inst is None:
+        conn.execute(
+            "INSERT INTO instructor (member_id, is_admin) VALUES (?, 1)",
+            (member_id,),
+        )
+    else:
+        conn.execute(
+            "UPDATE instructor SET is_admin=1 WHERE member_id=?", (member_id,)
+        )
+    conn.commit()
+    if inst is not None and inst["password_hash"] is not None:
+        return False  # keep existing (possibly UI-changed) password
+    set_instructor_password(conn, member_id, password)
+    return True
 
 
 # ---------------------------------------------------------------------------
