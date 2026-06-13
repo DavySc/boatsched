@@ -272,6 +272,33 @@ def add_or_update_members(conn: sqlite3.Connection, members: list,
         conn.commit()
 
 
+def seed_members(conn: sqlite3.Connection, names: list) -> dict:
+    """INSERT OR IGNORE a list of names into the member table.
+
+    Unlike add_or_update_members this is a one-shot initialization: every name
+    is treated as potentially new — no level semantics, no enrollment.
+    Returns {"created": int, "existing": int, "total": int}.
+    """
+    clean = [n.strip() for n in names if n and str(n).strip()]
+    if not clean:
+        total = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+        return {"created": 0, "existing": 0, "total": total}
+    before = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+    conn.executemany(
+        "INSERT OR IGNORE INTO member (name) VALUES (?)", [(n,) for n in clean]
+    )
+    conn.commit()
+    after = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+    created = after - before
+    return {"created": created, "existing": len(clean) - created, "total": after}
+
+
+def list_members(conn: sqlite3.Connection) -> list:
+    """Return all members ordered by name."""
+    return [{"id": r["id"], "name": r["name"]}
+            for r in conn.execute("SELECT id, name FROM member ORDER BY name")]
+
+
 def add_enrollment(conn: sqlite3.Connection, member_id: int,
                    season_id: int, level: str) -> None:
     """Upsert a single enrollment row."""

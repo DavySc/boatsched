@@ -33,6 +33,35 @@ def _viewer_html() -> str:
         encoding="utf-8")
 
 
+def _parse_names_csv(text: str) -> list:
+    """Extract names from a CSV string or a plain name-per-line list.
+
+    Supports the roster CSV format (name,level columns) and any CSV with
+    a 'name' column. Falls back to treating each non-blank line as a name.
+    """
+    import csv
+    from io import StringIO
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        return []
+    try:
+        reader = csv.DictReader(StringIO(text))
+        if reader.fieldnames:
+            norm = {f.strip().lower(): f for f in reader.fieldnames}
+            if "name" in norm:
+                key = norm["name"]
+                return [r[key].strip() for r in reader if r.get(key, "").strip()]
+    except Exception:
+        pass
+    # No 'name' header: treat each line's first token as a name
+    result = []
+    for line in lines:
+        name = line.strip().split(",")[0].strip().strip('"')
+        if name and name.lower() not in ("name", "naam"):
+            result.append(name)
+    return result
+
+
 def _extract_multipart(raw: bytes, ctype: str) -> bytes:
     boundary = ctype.split("boundary=")[-1].strip().strip('"').encode()
     sep = b"--" + boundary
@@ -639,6 +668,30 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             " WHERE m.id=?", (member_id,)
         ).fetchone())
         return {"member_id": member_id, "name": row["name"] if row else None}
+
+    # -----------------------------------------------------------------------
+    # API: members — list and bulk-seed
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/members")
+    async def list_members_api():
+        if db_conn is None:
+            raise HTTPException(503, "no database")
+        return await asyncio.to_thread(_db.list_members, db_conn)
+
+    @app.post("/api/members/import")
+    async def import_members_api(request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        raw = await request.body()
+        ctype = request.headers.get("content-type", "")
+        if "multipart" in ctype:
+            raw = _extract_multipart(raw, ctype)
+        names = _parse_names_csv(raw.decode("utf-8", "replace"))
+        if not names:
+            return JSONResponse({"error": "no names found in upload"}, status_code=400)
+        result = await asyncio.to_thread(_db.seed_members, db_conn, names)
+        return result
 
     # -----------------------------------------------------------------------
     # API: health

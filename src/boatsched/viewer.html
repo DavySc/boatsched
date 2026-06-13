@@ -260,6 +260,7 @@
   <header>
     <div id="user-bar" class="hidden">
       <button id="manage-pwd-btn" class="btn-sm">Wachtwoorden</button>
+      <button id="members-modal-btn" class="btn-sm">Leden</button>
       <button id="logout-btn" class="btn-sm">Uitloggen</button>
     </div>
     <div class="kicker">Vloot Rooster &middot; Dagindeling</div>
@@ -327,6 +328,30 @@
   </div>
 
   <footer>Lokaal geserveerd &middot; geen data verlaat uw machine</footer>
+</div>
+
+<!-- Member import modal -->
+<div id="members-modal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Leden importeren</h2>
+      <button id="members-modal-close" class="btn-sm">Sluiten</button>
+    </div>
+    <p style="font-size:14px;color:var(--ink2);margin-bottom:12px">
+      Upload een CSV met een <code>name</code> kolom (en optioneel <code>level</code>) om leden
+      te registreren. Gebruik dit eenmalig bij de start van het seizoen zodat terugkerende leden
+      beschikbaar zijn voor het rooster.
+    </p>
+    <div id="members-count-bar" style="font-size:13px;margin-bottom:8px"></div>
+    <div class="modal-sep"></div>
+    <p class="pwd-form-label">CSV uploaden</p>
+    <input type="file" id="members-file" accept=".csv,text/csv" style="margin-bottom:8px;display:block">
+    <div class="modal-actions" style="margin-top:8px">
+      <button id="members-import-btn" class="btn-sm primary">Importeren</button>
+    </div>
+    <p id="members-result" class="hidden" style="margin-top:10px;font-size:14px;color:#2a6a2a"></p>
+    <p id="members-err" class="err hidden" style="margin-top:10px"></p>
+  </div>
 </div>
 
 <!-- Password management modal -->
@@ -1326,6 +1351,57 @@ async function addInstructor(){
     $("add-inst-err").classList.remove("hidden");
   }
 }
+
+// ── Member import modal ────────────────────────────────────────
+async function openMembersModal(){
+  $("members-modal").classList.remove("hidden");
+  $("members-result").classList.add("hidden");
+  $("members-err").classList.add("hidden");
+  $("members-file").value="";
+  await _refreshMembersCount();
+}
+function closeMembersModal(){
+  $("members-modal").classList.add("hidden");
+  $("members-file").value="";
+}
+async function _refreshMembersCount(){
+  try{
+    const r=await fetch("/api/members");
+    if(r.ok){
+      const list=await r.json();
+      $("members-count-bar").textContent=`${list.length} leden geregistreerd`;
+    }
+  }catch(e){}
+}
+async function importMembers(){
+  const file=$("members-file").files[0];
+  $("members-result").classList.add("hidden");
+  $("members-err").classList.add("hidden");
+  if(!file){
+    $("members-err").textContent="Kies eerst een CSV bestand.";
+    $("members-err").classList.remove("hidden");return;
+  }
+  $("members-import-btn").disabled=true;
+  const fd=new FormData();fd.append("file",file);
+  try{
+    const r=await fetch("/api/members/import",{method:"POST",body:fd});
+    const data=await r.json();
+    if(!r.ok){throw new Error(data.error||r.statusText);}
+    $("members-result").textContent=
+      `✓ ${data.created} toegevoegd, ${data.existing} al aanwezig — totaal ${data.total} leden`;
+    $("members-result").classList.remove("hidden");
+    await _refreshMembersCount();
+  }catch(e){
+    $("members-err").textContent="Import mislukt: "+e.message;
+    $("members-err").classList.remove("hidden");
+  }
+  $("members-import-btn").disabled=false;
+}
+
+$("members-modal-btn").addEventListener("click",openMembersModal);
+$("members-modal-close").addEventListener("click",closeMembersModal);
+$("members-modal").addEventListener("click",e=>{if(e.target===$("members-modal"))closeMembersModal();});
+$("members-import-btn").addEventListener("click",importMembers);
 
 $("manage-pwd-btn").addEventListener("click",openPwdModal);
 $("logout-btn").addEventListener("click",doLogout);
