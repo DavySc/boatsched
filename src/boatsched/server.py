@@ -735,6 +735,27 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         await asyncio.to_thread(_db.set_admin, db_conn, member_id, is_admin)
         return {"ok": True}
 
+    @app.put("/api/members/{member_id}")
+    async def rename_member_api(member_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        try:
+            body = await request.json()
+            name = str(body["name"]).strip()
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if not name:
+            return JSONResponse({"error": "name must not be empty"}, status_code=400)
+        try:
+            await asyncio.to_thread(_db.rename_member, db_conn, member_id, name)
+            return {"ok": True}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/api/members/import")
     async def import_members_api(request: Request):
         if db_conn is None:

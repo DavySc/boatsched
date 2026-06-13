@@ -326,6 +326,18 @@ def list_members(conn: sqlite3.Connection) -> list:
             for r in conn.execute("SELECT id, name FROM member ORDER BY name")]
 
 
+def rename_member(conn: sqlite3.Connection, member_id: int, name: str) -> None:
+    """Rename a member. Raises ValueError on empty name or name collision."""
+    name = name.strip()
+    if not name:
+        raise ValueError("name must not be empty")
+    try:
+        conn.execute("UPDATE member SET name=? WHERE id=?", (name, member_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise ValueError(f"naam '{name}' bestaat al")
+
+
 def add_enrollment(conn: sqlite3.Connection, member_id: int,
                    season_id: int, level: str) -> None:
     """Upsert a single enrollment row."""

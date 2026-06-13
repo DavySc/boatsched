@@ -344,27 +344,27 @@
   <footer>Lokaal geserveerd &middot; geen data verlaat uw machine</footer>
 </div>
 
-<!-- Member import modal -->
+<!-- Member management modal -->
 <div id="members-modal" class="modal-overlay hidden">
-  <div class="modal-card">
-    <div class="modal-head">
-      <h2>Leden importeren</h2>
+  <div class="modal-card" style="max-height:85vh;display:flex;flex-direction:column">
+    <div class="modal-head" style="flex-shrink:0">
+      <h2>Leden</h2>
       <button id="members-modal-close" class="btn-sm">Sluiten</button>
     </div>
-    <p style="font-size:14px;color:var(--ink2);margin-bottom:12px">
-      Upload een CSV met een <code>name</code> kolom (en optioneel <code>level</code>) om leden
-      te registreren. Gebruik dit eenmalig bij de start van het seizoen zodat terugkerende leden
-      beschikbaar zijn voor het rooster.
-    </p>
-    <div id="members-count-bar" style="font-size:13px;margin-bottom:8px"></div>
-    <div class="modal-sep"></div>
-    <p class="pwd-form-label">CSV uploaden</p>
-    <input type="file" id="members-file" accept=".csv,text/csv" style="margin-bottom:8px;display:block">
-    <div class="modal-actions" style="margin-top:8px">
-      <button id="members-import-btn" class="btn-sm primary">Importeren</button>
+    <div id="members-count-bar" style="font-size:13px;margin-bottom:8px;flex-shrink:0"></div>
+    <ul id="member-list" class="inst-list" style="overflow-y:auto;flex:1;min-height:0;margin-bottom:0"></ul>
+    <div style="flex-shrink:0">
+      <div class="modal-sep"></div>
+      <p style="font-size:14px;color:var(--ink2);margin-bottom:10px">
+        CSV met een <code>name</code> kolom importeren om leden toe te voegen.
+      </p>
+      <input type="file" id="members-file" accept=".csv,text/csv" style="margin-bottom:8px;display:block">
+      <div class="modal-actions">
+        <button id="members-import-btn" class="btn-sm primary">Importeren</button>
+      </div>
+      <p id="members-result" class="hidden" style="margin-top:10px;font-size:14px;color:#2a6a2a"></p>
+      <p id="members-err" class="err hidden" style="margin-top:10px"></p>
     </div>
-    <p id="members-result" class="hidden" style="margin-top:10px;font-size:14px;color:#2a6a2a"></p>
-    <p id="members-err" class="err hidden" style="margin-top:10px"></p>
   </div>
 </div>
 
@@ -1465,27 +1465,75 @@ async function addInstructor(){
   }
 }
 
-// ── Member import modal ────────────────────────────────────────
+// ── Member management modal ────────────────────────────────────
+let _editingMemberId=null;
+
 async function openMembersModal(){
-  $("members-modal").classList.remove("hidden");
   $("members-result").classList.add("hidden");
   $("members-err").classList.add("hidden");
   $("members-file").value="";
-  await _refreshMembersCount();
+  _editingMemberId=null;
+  $("members-modal").classList.remove("hidden");
+  await loadMemberList();
+  renderMemberList();
 }
 function closeMembersModal(){
+  _editingMemberId=null;
   $("members-modal").classList.add("hidden");
   $("members-file").value="";
 }
-async function _refreshMembersCount(){
-  try{
-    const r=await fetch("/api/members");
-    if(r.ok){
-      const list=await r.json();
-      $("members-count-bar").textContent=`${list.length} leden geregistreerd`;
-    }
-  }catch(e){}
+function renderMemberList(){
+  const ul=$("member-list");ul.innerHTML="";
+  $("members-count-bar").textContent=`${_memberList.length} leden`;
+  if(!_memberList.length){
+    ul.innerHTML='<li style="padding:10px 0;color:#8a7a62;font-size:14px">Geen leden in database.</li>';
+    return;
+  }
+  _memberList.forEach(m=>ul.appendChild(_mkMemberRow(m)));
 }
+function _mkMemberRow(m){
+  const li=document.createElement("li");li.className="inst-row";
+  if(_editingMemberId===m.id){
+    const inp=document.createElement("input");
+    inp.type="text";inp.value=m.name;
+    inp.style.cssText="flex:1;font-family:inherit;font-size:14px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:#fdf9f4;color:var(--ink)";
+    const save=document.createElement("button");save.className="btn-sm primary";save.textContent="Opslaan";
+    const cancel=document.createElement("button");cancel.className="btn-sm";cancel.textContent="Annuleren";
+    const errSpan=document.createElement("span");
+    errSpan.style.cssText="font-size:12px;color:var(--accent);margin-left:6px";
+    save.addEventListener("click",()=>saveMemberRename(m.id,inp.value,errSpan));
+    cancel.addEventListener("click",cancelMemberEdit);
+    inp.addEventListener("keydown",e=>{
+      if(e.key==="Enter")saveMemberRename(m.id,inp.value,errSpan);
+      if(e.key==="Escape")cancelMemberEdit();
+    });
+    li.append(inp,save,cancel,errSpan);
+    requestAnimationFrame(()=>{inp.focus();inp.select();});
+  }else{
+    const nameSpan=document.createElement("span");nameSpan.className="inst-name";nameSpan.textContent=m.name;
+    const editBtn=document.createElement("button");editBtn.className="btn-sm";editBtn.textContent="Bewerken";
+    editBtn.addEventListener("click",()=>{_editingMemberId=m.id;renderMemberList();});
+    li.append(nameSpan,editBtn);
+  }
+  return li;
+}
+async function saveMemberRename(id,newName,errSpan){
+  newName=newName.trim();
+  if(!newName){errSpan.textContent="Naam mag niet leeg zijn.";return;}
+  const r=await fetch(`/api/members/${id}`,{
+    method:"PUT",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:newName}),
+  });
+  const data=await r.json();
+  if(data.ok){
+    _editingMemberId=null;
+    await loadMemberList();
+    renderMemberList();
+  }else{
+    errSpan.textContent=data.error||"Opslaan mislukt.";
+  }
+}
+function cancelMemberEdit(){_editingMemberId=null;renderMemberList();}
 async function importMembers(){
   const file=$("members-file").files[0];
   $("members-result").classList.add("hidden");
@@ -1503,7 +1551,7 @@ async function importMembers(){
     $("members-result").textContent=
       `✓ ${data.created} toegevoegd, ${data.existing} al aanwezig — totaal ${data.total} leden`;
     $("members-result").classList.remove("hidden");
-    await _refreshMembersCount();
+    await loadMemberList();renderMemberList();
   }catch(e){
     $("members-err").textContent="Import mislukt: "+e.message;
     $("members-err").classList.remove("hidden");
