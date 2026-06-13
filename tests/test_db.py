@@ -1,26 +1,29 @@
-"""Tests for db.add_or_update_members.
+"""Tests for db helpers: members, enrollment, seasons, schedules, boats."""
+import sqlite3
 
-Each test asserts the core requirement: after the call every entry from the
-input has a corresponding row in the member table with the correct level.
-"""
 import pytest
 
-from boatsched.db import (get_connection, add_or_update_members,
-                          create_season, list_seasons, save_schedule, init_db,
-                          list_schedules, get_schedule, swap_assignment,
-                          list_boats, rename_boat)
+from boatsched.db import (
+    get_connection, add_or_update_members, add_enrollment, get_season_roster,
+    create_season, list_seasons, save_schedule, init_db,
+    list_schedules, get_schedule, swap_assignment,
+    list_boats, rename_boat,
+)
 from boatsched.roster import parse_roster_bytes, roster_from_counts
 
 
+# ---------------------------------------------------------------------------
+# Minimal fixture — member table only (no level column)
+# ---------------------------------------------------------------------------
+
 @pytest.fixture
 def conn():
-    """In-memory DB with the member table and unique index on name."""
+    """In-memory DB with member table (no level) and unique index on name."""
     c = get_connection(":memory:")
     c.executescript("""
         CREATE TABLE member (
             id     INTEGER PRIMARY KEY,
             name   TEXT NOT NULL,
-            level  TEXT,
             active BOOLEAN NOT NULL DEFAULT 1,
             joined DATE NOT NULL DEFAULT (date('now'))
         );
@@ -29,34 +32,54 @@ def conn():
     return c
 
 
-def _db_members(conn):
-    """Return {name: level} for every row currently in the member table."""
-    return {row["name"]: row["level"]
-            for row in conn.execute("SELECT name, level FROM member")}
+def _member_names(conn):
+    """Return the set of names currently in the member table."""
+    return {row["name"] for row in conn.execute("SELECT name FROM member")}
 
 
-def _assert_all_present(conn, members):
-    """Assert every (name, level) pair is in the DB with the exact level."""
-    db = _db_members(conn)
-    for name, level in members:
+def _assert_names_present(conn, members):
+    """Assert every name from members is present in the member table."""
+    db = _member_names(conn)
+    for name, _ in members:
         assert name in db, f"{name!r} missing from member table"
-        assert db[name] == level, (
-            f"{name!r}: expected level {level!r}, found {db[name]!r}")
 
 
 # ---------------------------------------------------------------------------
-# Insert
+# Full-schema fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fconn():
+    """In-memory DB with the complete schema via init_db."""
+    return init_db(":memory:")
+
+
+# ---------------------------------------------------------------------------
+# Four members re-used across schedule tests
+# ---------------------------------------------------------------------------
+
+_MEMBERS_4 = [("Alice", "k"), ("Bob", "k"), ("Carol", "b"), ("Dave", "b")]
+_RESULT_4 = [
+    {"day": "Sat", "boat": 1, "name": "Alice", "level": "k"},
+    {"day": "Sat", "boat": 1, "name": "Bob",   "level": "k"},
+    {"day": "Sat", "boat": 2, "name": "Carol",  "level": "b"},
+    {"day": "Sat", "boat": 2, "name": "Dave",   "level": "b"},
+]
+
+
+# ---------------------------------------------------------------------------
+# Member insertion (no enrollment — just name persistence)
 # ---------------------------------------------------------------------------
 
 class TestInsert:
     def test_single_member(self, conn):
         add_or_update_members(conn, [("Alice", "k")])
-        _assert_all_present(conn, [("Alice", "k")])
+        assert "Alice" in _member_names(conn)
 
     def test_multiple_members(self, conn):
         members = [("Alice", "k"), ("Bob", "b"), ("Carol", "A"), ("Dave", "B")]
         add_or_update_members(conn, members)
-        _assert_all_present(conn, members)
+        _assert_names_present(conn, members)
 
     def test_row_count_matches_input(self, conn):
         members = [("Alice", "k"), ("Bob", "b"), ("Carol", "A")]
@@ -70,17 +93,8 @@ class TestInsert:
         assert count == 0
 
 
-# ---------------------------------------------------------------------------
-# Update on conflict
-# ---------------------------------------------------------------------------
-
 class TestUpdate:
-    def test_level_updated_on_name_conflict(self, conn):
-        add_or_update_members(conn, [("Alice", "k")])
-        add_or_update_members(conn, [("Alice", "b")])
-        _assert_all_present(conn, [("Alice", "b")])
-
-    def test_no_duplicate_row_created(self, conn):
+    def test_no_duplicate_row_on_name_conflict(self, conn):
         add_or_update_members(conn, [("Alice", "k")])
         add_or_update_members(conn, [("Alice", "b")])
         count = conn.execute(
@@ -91,24 +105,20 @@ class TestUpdate:
     def test_unchanged_member_stays_intact(self, conn):
         add_or_update_members(conn, [("Alice", "k"), ("Bob", "b")])
         add_or_update_members(conn, [("Alice", "A")])
-        _assert_all_present(conn, [("Alice", "A"), ("Bob", "b")])
+        _assert_names_present(conn, [("Alice", "A"), ("Bob", "b")])
 
-    def test_same_level_repeat_is_idempotent(self, conn):
+    def test_repeat_insert_is_idempotent(self, conn):
         add_or_update_members(conn, [("Alice", "k")])
         add_or_update_members(conn, [("Alice", "k")])
-        _assert_all_present(conn, [("Alice", "k")])
+        assert conn.execute("SELECT COUNT(*) FROM member").fetchone()[0] == 1
 
-
-# ---------------------------------------------------------------------------
-# CSV round-trip — the stated requirement
-# ---------------------------------------------------------------------------
 
 class TestCsvRoundTrip:
-    def test_all_csv_entries_in_db_with_correct_level(self, conn):
+    def test_all_csv_names_in_db(self, conn):
         csv = b"name,level\nAlice,k\nBob,b\nCarol,A\nDave,B\n"
         members = parse_roster_bytes(csv)
         add_or_update_members(conn, members)
-        _assert_all_present(conn, members)
+        _assert_names_present(conn, members)
 
     def test_csv_row_count_matches_db(self, conn):
         csv = b"name,level\nAlice,k\nBob,b\nCarol,A\nDave,B\n"
@@ -117,48 +127,301 @@ class TestCsvRoundTrip:
         count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
         assert count == len(members)
 
-    def test_csv_re_upload_updates_levels(self, conn):
-        first  = b"name,level\nAlice,k\nBob,b\n"
-        second = b"name,level\nAlice,b\nBob,A\n"
-        add_or_update_members(conn, parse_roster_bytes(first))
-        members = parse_roster_bytes(second)
-        add_or_update_members(conn, members)
-        _assert_all_present(conn, members)
-
-    def test_large_roster_all_entries_present(self, conn):
+    def test_large_roster_all_names_present(self, conn):
         members = roster_from_counts({"k": 12, "b": 16, "A": 12, "B": 12})
         add_or_update_members(conn, members)
-        _assert_all_present(conn, members)
-
-    def test_large_roster_exact_count(self, conn):
-        members = roster_from_counts({"k": 12, "b": 16, "A": 12, "B": 12})
-        add_or_update_members(conn, members)
-        count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
-        assert count == len(members)
+        _assert_names_present(conn, members)
 
 
 # ---------------------------------------------------------------------------
-# Fixtures for season / schedule tests (need the full schema)
+# Enrollment — level is now per-season
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def fconn():
-    """In-memory DB with the complete schema via init_db."""
-    return init_db(":memory:")
+class TestEnrollment:
+    def test_level_stored_in_enrollment(self, fconn):
+        sid = create_season(fconn, 2026)
+        add_or_update_members(fconn, [("Alice", "k")], sid)
+        row = fconn.execute(
+            "SELECT e.level FROM enrollment e JOIN member m ON m.id = e.member_id"
+            " WHERE m.name='Alice' AND e.season_id=?", (sid,)
+        ).fetchone()
+        assert row is not None
+        assert row["level"] == "k"
 
+    def test_enrollment_level_updated_on_conflict(self, fconn):
+        sid = create_season(fconn, 2026)
+        add_or_update_members(fconn, [("Alice", "k")], sid)
+        add_or_update_members(fconn, [("Alice", "b")], sid)
+        row = fconn.execute(
+            "SELECT e.level FROM enrollment e JOIN member m ON m.id = e.member_id"
+            " WHERE m.name='Alice' AND e.season_id=?", (sid,)
+        ).fetchone()
+        assert row["level"] == "b"
 
-# Four members re-used across TestSaveSchedule
-_MEMBERS_4 = [("Alice", "k"), ("Bob", "k"), ("Carol", "b"), ("Dave", "b")]
-_RESULT_4 = [
-    {"day": "Sat", "boat": 1, "name": "Alice", "level": "k"},
-    {"day": "Sat", "boat": 1, "name": "Bob",   "level": "k"},
-    {"day": "Sat", "boat": 2, "name": "Carol",  "level": "b"},
-    {"day": "Sat", "boat": 2, "name": "Dave",   "level": "b"},
-]
+    def test_no_enrollment_without_season_id(self, fconn):
+        add_or_update_members(fconn, [("Alice", "k")])
+        count = fconn.execute("SELECT COUNT(*) FROM enrollment").fetchone()[0]
+        assert count == 0
+
+    def test_multiple_seasons_are_independent(self, fconn):
+        sid1 = create_season(fconn, 2026)
+        sid2 = create_season(fconn, 2027)
+        add_or_update_members(fconn, [("Alice", "k")], sid1)
+        add_or_update_members(fconn, [("Alice", "b")], sid2)
+        lev = lambda sid: fconn.execute(
+            "SELECT e.level FROM enrollment e JOIN member m ON m.id = e.member_id"
+            " WHERE m.name='Alice' AND e.season_id=?", (sid,)
+        ).fetchone()["level"]
+        assert lev(sid1) == "k"
+        assert lev(sid2) == "b"
+
+    def test_add_enrollment_helper(self, fconn):
+        sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Bob')")
+        bob_id = fconn.execute("SELECT id FROM member WHERE name='Bob'").fetchone()["id"]
+        fconn.commit()
+        add_enrollment(fconn, bob_id, sid, "A")
+        row = fconn.execute(
+            "SELECT level FROM enrollment WHERE member_id=? AND season_id=?",
+            (bob_id, sid)
+        ).fetchone()
+        assert row["level"] == "A"
+
+    def test_get_season_roster_returns_enrolled_members(self, fconn):
+        sid = create_season(fconn, 2026)
+        add_or_update_members(fconn, [("Alice", "k"), ("Bob", "b")], sid)
+        roster = get_season_roster(fconn, sid)
+        assert sorted(roster) == sorted([("Alice", "k"), ("Bob", "b")])
+
+    def test_get_season_roster_empty_when_none_enrolled(self, fconn):
+        sid = create_season(fconn, 2026)
+        assert get_season_roster(fconn, sid) == []
+
+    def test_get_season_roster_excludes_other_seasons(self, fconn):
+        sid1 = create_season(fconn, 2026)
+        sid2 = create_season(fconn, 2027)
+        add_or_update_members(fconn, [("Alice", "k")], sid1)
+        assert get_season_roster(fconn, sid2) == []
 
 
 # ---------------------------------------------------------------------------
-# create_season
+# Required: FK prevents skill_result without enrollment
+# ---------------------------------------------------------------------------
+
+class TestSkillResultForeignKey:
+    def test_skill_result_requires_enrollment(self, fconn):
+        """INSERT into skill_result without a matching enrollment raises FK error."""
+        sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Alice')")
+        alice_id = fconn.execute(
+            "SELECT id FROM member WHERE name='Alice'"
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO skill (level, code, label, ordinal) VALUES ('k','k1','Knoop',1)"
+        )
+        skill_id = fconn.execute(
+            "SELECT id FROM skill WHERE code='k1'"
+        ).fetchone()["id"]
+        fconn.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            fconn.execute(
+                "INSERT INTO skill_result (member_id, season_id, skill_id, status)"
+                " VALUES (?, ?, ?, 'done')", (alice_id, sid, skill_id)
+            )
+            fconn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Required: get_schedule raises on missing enrollment
+# ---------------------------------------------------------------------------
+
+def test_get_schedule_raises_on_missing_enrollment(fconn):
+    """get_schedule raises RuntimeError if any scheduled member lacks enrollment."""
+    sid = create_season(fconn, 2026)
+    fconn.execute("INSERT INTO member (name) VALUES ('Alice')")
+    alice_id = fconn.execute(
+        "SELECT id FROM member WHERE name='Alice'"
+    ).fetchone()["id"]
+    fconn.commit()
+    # Insert schedule and assignment without creating enrollment
+    sch_id = fconn.execute(
+        "INSERT INTO schedule (season_id, config) VALUES (?, ?)", (sid, "{}")
+    ).lastrowid
+    fconn.execute(
+        "INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day)"
+        " VALUES (?, ?, 1, 'Sat')", (sch_id, alice_id)
+    )
+    fconn.commit()
+
+    with pytest.raises(RuntimeError, match="not enrolled"):
+        get_schedule(fconn, sch_id)
+
+
+# ---------------------------------------------------------------------------
+# Required: retiring a skill preserves existing skill_result rows
+# ---------------------------------------------------------------------------
+
+class TestSkillRetirement:
+    def _seed_skill(self, fconn, member_name, level, code, season_year=2026):
+        """Create member + enrollment + skill, return (member_id, season_id, skill_id)."""
+        sid = create_season(fconn, season_year)
+        fconn.execute("INSERT INTO member (name) VALUES (?)", (member_name,))
+        mid = fconn.execute(
+            "SELECT id FROM member WHERE name=?", (member_name,)
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (?, ?, ?)",
+            (mid, sid, level)
+        )
+        fconn.execute(
+            "INSERT INTO skill (level, code, label, ordinal) VALUES (?, ?, ?, 1)",
+            (level, code, "Label")
+        )
+        skill_id = fconn.execute(
+            "SELECT id FROM skill WHERE code=?", (code,)
+        ).fetchone()["id"]
+        fconn.commit()
+        return mid, sid, skill_id
+
+    def test_retiring_skill_keeps_existing_results(self, fconn):
+        mid, sid, skill_id = self._seed_skill(fconn, "Alice", "k", "k_retire")
+        fconn.execute(
+            "INSERT INTO skill_result (member_id, season_id, skill_id, status)"
+            " VALUES (?, ?, ?, 'done')", (mid, sid, skill_id)
+        )
+        fconn.commit()
+
+        fconn.execute("UPDATE skill SET retired=1 WHERE id=?", (skill_id,))
+        fconn.commit()
+
+        count = fconn.execute(
+            "SELECT COUNT(*) FROM skill_result WHERE skill_id=?", (skill_id,)
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_retired_skill_hidden_in_view(self, fconn):
+        mid, sid, skill_id = self._seed_skill(fconn, "Bob", "k", "k_hide")
+        fconn.execute("UPDATE skill SET retired=1 WHERE id=?", (skill_id,))
+        fconn.commit()
+
+        rows = fconn.execute(
+            "SELECT * FROM v_level_card WHERE member_id=? AND season_id=?",
+            (mid, sid)
+        ).fetchall()
+        assert all(r["skill_id"] != skill_id for r in rows)
+
+    def test_replacement_skill_appears_in_view(self, fconn):
+        mid, sid, old_id = self._seed_skill(fconn, "Carol", "k", "k_old")
+        fconn.execute("UPDATE skill SET retired=1 WHERE id=?", (old_id,))
+        fconn.execute(
+            "INSERT INTO skill (level, code, label, ordinal) VALUES ('k','k_new','New',2)"
+        )
+        fconn.commit()
+
+        rows = fconn.execute(
+            "SELECT skill_code FROM v_level_card WHERE member_id=? AND season_id=?",
+            (mid, sid)
+        ).fetchall()
+        codes = [r["skill_code"] for r in rows]
+        assert "k_new" in codes
+        assert "k_old" not in codes
+
+
+# ---------------------------------------------------------------------------
+# Required: v_level_card shows one row per live skill with NULL for unfilled
+# ---------------------------------------------------------------------------
+
+class TestVLevelCard:
+    def test_one_row_per_live_skill_null_status(self, fconn):
+        sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Dave')")
+        mid = fconn.execute(
+            "SELECT id FROM member WHERE name='Dave'"
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (?, ?, 'k')",
+            (mid, sid)
+        )
+        fconn.executemany(
+            "INSERT INTO skill (level, code, label, ordinal) VALUES ('k', ?, ?, ?)",
+            [("k1", "Skill1", 1), ("k2", "Skill2", 2), ("k3", "Skill3", 3)]
+        )
+        fconn.commit()
+
+        rows = fconn.execute(
+            "SELECT * FROM v_level_card WHERE member_id=? AND season_id=?",
+            (mid, sid)
+        ).fetchall()
+        assert len(rows) == 3
+        assert all(r["status"] is None for r in rows)
+        assert all(r["note"] is None for r in rows)
+
+    def test_filled_skill_shows_status_and_note(self, fconn):
+        sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Eve')")
+        mid = fconn.execute(
+            "SELECT id FROM member WHERE name='Eve'"
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (?, ?, 'b')",
+            (mid, sid)
+        )
+        fconn.execute(
+            "INSERT INTO skill (level, code, label, ordinal) VALUES ('b','b1','Sturen',1)"
+        )
+        skill_id = fconn.execute(
+            "SELECT id FROM skill WHERE code='b1'"
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO skill_result (member_id, season_id, skill_id, status, note)"
+            " VALUES (?, ?, ?, 'done', 'goed')", (mid, sid, skill_id)
+        )
+        fconn.commit()
+
+        row = fconn.execute(
+            "SELECT status, note FROM v_level_card WHERE member_id=? AND season_id=?",
+            (mid, sid)
+        ).fetchone()
+        assert row["status"] == "done"
+        assert row["note"] == "goed"
+
+    def test_unfilled_skills_return_null_alongside_filled(self, fconn):
+        sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Frank')")
+        mid = fconn.execute(
+            "SELECT id FROM member WHERE name='Frank'"
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (?, ?, 'A')",
+            (mid, sid)
+        )
+        fconn.executemany(
+            "INSERT INTO skill (level, code, label, ordinal) VALUES ('A', ?, ?, ?)",
+            [("a1", "SkillA1", 1), ("a2", "SkillA2", 2)]
+        )
+        skill_id = fconn.execute(
+            "SELECT id FROM skill WHERE code='a1'"
+        ).fetchone()["id"]
+        fconn.execute(
+            "INSERT INTO skill_result (member_id, season_id, skill_id, status)"
+            " VALUES (?, ?, ?, 'ok')", (mid, sid, skill_id)
+        )
+        fconn.commit()
+
+        rows = fconn.execute(
+            "SELECT skill_code, status FROM v_level_card"
+            " WHERE member_id=? AND season_id=? ORDER BY skill_code",
+            (mid, sid)
+        ).fetchall()
+        assert len(rows) == 2
+        statuses = {r["skill_code"]: r["status"] for r in rows}
+        assert statuses["a1"] == "ok"
+        assert statuses["a2"] is None
+
+
+# ---------------------------------------------------------------------------
+# create_season / list_seasons
 # ---------------------------------------------------------------------------
 
 class TestCreateSeason:
@@ -178,10 +441,6 @@ class TestCreateSeason:
         with pytest.raises(Exception):
             create_season(fconn, 2026)
 
-
-# ---------------------------------------------------------------------------
-# list_seasons
-# ---------------------------------------------------------------------------
 
 class TestListSeasons:
     def test_empty_when_no_seasons(self, fconn):
@@ -205,14 +464,15 @@ class TestListSeasons:
 
 
 # ---------------------------------------------------------------------------
-# save_schedule
+# save_schedule — seed must create season first, then enroll members
 # ---------------------------------------------------------------------------
 
 class TestSaveSchedule:
     def _seed(self, conn, year=2026):
-        """Add the four standard members and one season; return season_id."""
-        add_or_update_members(conn, _MEMBERS_4)
-        return create_season(conn, year)
+        """Create season, add four members with enrollment, return season_id."""
+        sid = create_season(conn, year)
+        add_or_update_members(conn, _MEMBERS_4, sid)
+        return sid
 
     def test_returns_integer_id(self, fconn):
         sid = self._seed(fconn)
@@ -273,8 +533,9 @@ class TestSaveSchedule:
 
 class TestListSchedules:
     def _seed(self, conn, year=2026):
-        add_or_update_members(conn, _MEMBERS_4)
-        return create_season(conn, year)
+        sid = create_season(conn, year)
+        add_or_update_members(conn, _MEMBERS_4, sid)
+        return sid
 
     def test_empty_when_no_schedules(self, fconn):
         sid = self._seed(fconn)
@@ -306,13 +567,13 @@ class TestListSchedules:
 
 
 # ---------------------------------------------------------------------------
-# get_schedule
+# get_schedule — level now comes from enrollment
 # ---------------------------------------------------------------------------
 
 class TestGetSchedule:
     def _seed(self, conn, year=2026):
-        add_or_update_members(conn, _MEMBERS_4)
         sid = create_season(conn, year)
+        add_or_update_members(conn, _MEMBERS_4, sid)
         return save_schedule(conn, sid, "{}", _RESULT_4)
 
     def test_returns_all_rows(self, fconn):
@@ -330,6 +591,13 @@ class TestGetSchedule:
         names = {r["name"] for r in get_schedule(fconn, schedule_id)}
         assert names == {"Alice", "Bob", "Carol", "Dave"}
 
+    def test_levels_come_from_enrollment(self, fconn):
+        schedule_id = self._seed(fconn)
+        rows = get_schedule(fconn, schedule_id)
+        level_map = {r["name"]: r["level"] for r in rows}
+        assert level_map["Alice"] == "k"
+        assert level_map["Carol"] == "b"
+
     def test_empty_for_unknown_id(self, fconn):
         assert get_schedule(fconn, 9999) == []
 
@@ -340,8 +608,8 @@ class TestGetSchedule:
 
 class TestSwapAssignment:
     def _seed(self, conn, year=2026):
-        add_or_update_members(conn, _MEMBERS_4)
         sid = create_season(conn, year)
+        add_or_update_members(conn, _MEMBERS_4, sid)
         return save_schedule(conn, sid, "{}", _RESULT_4)
 
     def _boat_of(self, conn, schedule_id, name, day="Sat"):
