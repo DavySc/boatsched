@@ -10,11 +10,33 @@ ExecStart=/opt/boatsched/.venv/bin/boatsched-server --db /var/lib/boatsched/boat
 Restart=on-failure
 RestartSec=5s
 
-# Protect system
-PrivateTmp=true
+# Secrets and config live in a root-owned 0600 file, NOT in this unit:
+#   /etc/boatsched/boatsched.env
+# Required keys (see deploy notes in README):
+#   BOATSCHED_ADMIN=yourname
+#   BOATSCHED_ADMIN_PW=<strong password>
+# Optional (sane production defaults are applied automatically when --db is set):
+#   BOATSCHED_REQUIRE_AUTH=1
+#   BOATSCHED_SECURE_COOKIES=1
+#   BOATSCHED_MIN_PASSWORD_LEN=8
+#   BOATSCHED_LOGIN_MAX_FAIL=10
+EnvironmentFile=/etc/boatsched/boatsched.env
+
+# --- sandboxing / privilege reduction ---
 NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
 ReadWritePaths=/var/lib/boatsched
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

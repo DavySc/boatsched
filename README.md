@@ -90,24 +90,38 @@ pytest tests/test_boatsched.py::test_tiny_solve # single test
 
 ## Deployment on Hetzner
 
+> **Security model (read first).** In production the app refuses anonymous
+> access: `--db` turns on `require_auth`, `secure_cookies`, an 8-char minimum
+> password, and login rate-limiting. There is **no open/bootstrap window** —
+> the first admin is seeded from environment variables, so you must set
+> `BOATSCHED_ADMIN` and `BOATSCHED_ADMIN_PW` before first start or nobody can
+> log in. Always run behind the provided nginx + TLS config; never expose port
+> 8000 to the internet directly.
+
 ### Option A — Docker (recommended)
 
-Build and start everything with Docker Compose. The build step compiles the React app and packages it with the Python server into a single image.
+Build and start everything with Docker Compose. The image binds the app to
+`127.0.0.1:8000` only — put nginx (TLS, rate limiting, headers) in front.
 
 ```bash
-# on your local machine
-docker compose build
-docker compose push   # if using a registry, otherwise build on the server
-
 # on the Hetzner server
 git clone <repo> /opt/boatsched
 cd /opt/boatsched
-docker compose up -d
+
+# Create the secrets file (NOT committed). chmod 600.
+cat > .env <<'EOF'
+BOATSCHED_ADMIN=yourname
+BOATSCHED_ADMIN_PW=use-a-long-random-password
+EOF
+chmod 600 .env
+
+docker compose up -d --build
 ```
 
-The service runs on port 8000 inside Docker; add a reverse proxy in front if you need HTTPS.
-
-`docker-compose.yml` mounts a named volume at `/data` for the SQLite database so it persists across container rebuilds.
+`docker-compose.yml` sets `BOATSCHED_REQUIRE_AUTH=1`, `BOATSCHED_SECURE_COOKIES=1`,
+and a minimum password length, and mounts a named volume at `/data` for the
+SQLite database. Then configure nginx as in step 6 below so HTTPS terminates in
+front of the container.
 
 ### Option B — nginx + systemd (bare-metal)
 
@@ -141,7 +155,26 @@ mkdir -p /var/lib/boatsched
 chown boatsched /var/lib/boatsched
 ```
 
-**5. Install and enable the systemd service:**
+**5. Create the secrets / env file (root-owned, 0600):**
+
+The systemd unit loads `/etc/boatsched/boatsched.env`. It **must** contain the
+bootstrap admin credentials, or the service starts locked (nobody can log in):
+
+```bash
+mkdir -p /etc/boatsched
+cat > /etc/boatsched/boatsched.env <<'EOF'
+BOATSCHED_ADMIN=yourname
+BOATSCHED_ADMIN_PW=use-a-long-random-password
+EOF
+chmod 600 /etc/boatsched/boatsched.env
+chown root:root /etc/boatsched/boatsched.env
+```
+
+Production hardening (`require_auth`, secure cookies, 8-char min password) is on
+automatically because the service runs with `--db`. The admin password is seeded
+on first start; changing it later in the UI persists across restarts.
+
+**6. Install and enable the systemd service:**
 
 ```bash
 cp deploy/boatsched.service /etc/systemd/system/
@@ -149,24 +182,38 @@ systemctl daemon-reload
 systemctl enable --now boatsched
 ```
 
-**6. Configure nginx:**
+**7. Configure nginx (TLS, rate limiting, security headers):**
+
+The provided config is an `http`-context file (it defines `limit_req_zone`),
+so install it under `conf.d/`, not `sites-available/`. Edit `server_name` to
+your domain first.
 
 ```bash
-cp deploy/nginx.conf /etc/nginx/sites-available/boatsched
-ln -s /etc/nginx/sites-available/boatsched /etc/nginx/sites-enabled/
+cp deploy/nginx.conf /etc/nginx/conf.d/boatsched.conf
+# edit /etc/nginx/conf.d/boatsched.conf → set server_name to your domain
+apt install certbot python3-certbot-nginx
+certbot --nginx -d yourdomain.example      # provisions/renews the TLS cert
 nginx -t && systemctl reload nginx
 ```
 
-For HTTPS, use Certbot:
-
-```bash
-apt install certbot python3-certbot-nginx
-certbot --nginx -d yourdomain.example
-```
+Confirm the app port is **not** publicly reachable: `curl http://YOUR_IP:8000`
+from another host should fail (the app binds `127.0.0.1` only).
 
 ### Environment
 
-No environment variables are required. All configuration is passed as CLI flags to `boatsched-server`. The database path defaults to `/data/boatsched.db` in Docker and `/var/lib/boatsched/boatsched.db` in the systemd setup.
+Production reads these environment variables (via the systemd `EnvironmentFile`
+or Docker `.env`):
+
+| variable | purpose | required |
+|---|---|---|
+| `BOATSCHED_ADMIN` | bootstrap admin member name | yes |
+| `BOATSCHED_ADMIN_PW` | bootstrap admin password (seeded once) | yes |
+| `BOATSCHED_REQUIRE_AUTH` | disable open mode (default on when `--db` set) | no |
+| `BOATSCHED_SECURE_COOKIES` | `Secure` flag on session cookie (default on with `--db`) | no |
+| `BOATSCHED_MIN_PASSWORD_LEN` | minimum password length (default 8 in prod) | no |
+| `BOATSCHED_LOGIN_MAX_FAIL` | failed logins per IP before 429 (default 10) | no |
+
+The database path is still set via the `--db` CLI flag.
 
 ---
 

@@ -321,9 +321,21 @@ def seed_members(conn: sqlite3.Connection, names: list) -> dict:
 
 
 def list_members(conn: sqlite3.Connection) -> list:
-    """Return all members ordered by name."""
+    """Return all active members ordered by name."""
     return [{"id": r["id"], "name": r["name"]}
-            for r in conn.execute("SELECT id, name FROM member ORDER BY name")]
+            for r in conn.execute(
+                "SELECT id, name FROM member WHERE active=1 ORDER BY name"
+            )]
+
+
+def delete_member(conn: sqlite3.Connection, member_id: int) -> None:
+    """Soft-delete a member (sets active=0). Raises ValueError if they are an instructor."""
+    if conn.execute(
+        "SELECT 1 FROM instructor WHERE member_id=?", (member_id,)
+    ).fetchone():
+        raise ValueError("lid is een instructeur — verwijder eerst de instructeursrol")
+    conn.execute("UPDATE member SET active=0 WHERE id=?", (member_id,))
+    conn.commit()
 
 
 def rename_member(conn: sqlite3.Connection, member_id: int, name: str) -> None:
@@ -520,6 +532,40 @@ def set_admin(conn: sqlite3.Connection, member_id: int, is_admin: bool) -> None:
         (1 if is_admin else 0, member_id),
     )
     conn.commit()
+
+
+def ensure_admin(conn: sqlite3.Connection, name: str, password: str) -> bool:
+    """Seed a bootstrap admin instructor (idempotent).
+
+    Ensures `name` exists as a member, is an admin instructor, and has a
+    password. The password is set only if the instructor does not already
+    have one, so a UI-changed password survives restarts. Returns True if a
+    password was set (first-time seed), False if the admin already existed.
+    """
+    name = (name or "").strip()
+    if not name or not password:
+        raise ValueError("admin name and password are required")
+    row = conn.execute("SELECT id FROM member WHERE name=?", (name,)).fetchone()
+    member_id = row["id"] if row else conn.execute(
+        "INSERT INTO member (name) VALUES (?)", (name,)
+    ).lastrowid
+    inst = conn.execute(
+        "SELECT password_hash FROM instructor WHERE member_id=?", (member_id,)
+    ).fetchone()
+    if inst is None:
+        conn.execute(
+            "INSERT INTO instructor (member_id, is_admin) VALUES (?, 1)",
+            (member_id,),
+        )
+    else:
+        conn.execute(
+            "UPDATE instructor SET is_admin=1 WHERE member_id=?", (member_id,)
+        )
+    conn.commit()
+    if inst is not None and inst["password_hash"] is not None:
+        return False  # keep existing (possibly UI-changed) password
+    set_instructor_password(conn, member_id, password)
+    return True
 
 
 # ---------------------------------------------------------------------------
