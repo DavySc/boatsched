@@ -31,8 +31,8 @@ class Config:
     restricted: Sequence[str] = ("Sat", "Sun", "Tue", "Wed")
     diverse: Sequence[str] = ("Fri", "Mon")
     adj: int = 1                                       # max level spread on restricted days
-    stage_seconds: float = 45.0                        # budget for stages A and B each
-    seconds: float = 60.0                              # budget for stage C
+    stage_seconds: float = 20.0                        # budget for stages A and B each
+    seconds: float = 115.0                             # budget for stage C
     workers: int = 8
 
     @property
@@ -55,7 +55,8 @@ def validate(kids: List[Kid], cfg: Config) -> None:
             f"unknown level(s) {bad}; known levels are {list(cfg.levels)}")
 
 
-def build_model(kids: List[Kid], cfg: Config) -> dict:
+def build_model(kids: List[Kid], cfg: Config,
+                *, _prefixing: bool = True, _prune_pairs: bool = True) -> dict:
     """Construct the CP-SAT model and the three objective variables."""
     validate(kids, cfg)
     levels = list(cfg.levels)
@@ -76,6 +77,39 @@ def build_model(kids: List[Kid], cfg: Config) -> dict:
     for d in range(D):
         for b in range(n_boats):
             m.Add(sum(x[k, d, b] for k in range(N)) == cap)
+
+    # Pre-fix pure-level boat assignments on restricted days.
+    # When a level's kid count is divisible by cap, allocate a contiguous
+    # non-overlapping range of boat indices per level and forbid all
+    # out-of-range boats via == 0 constraints on restricted days.
+    # CP-SAT presolve propagates these into fixed variables, eliminating most
+    # of the restricted-day search space. The solver can still assign any
+    # specific boat within the range on each day, so repeat co-boatings are
+    # unaffected in terms of feasible solutions.
+    if _prefixing:
+        boat_offset = 0
+        level_ranges: list = []   # (offset, n_b_for_level) per level, or None
+        for li in range(len(levels)):
+            k_list = sorted(k for k in range(N) if lvl_of[k] == li)
+            n_l = len(k_list)
+            n_b_for_level = n_l // cap
+            if n_l % cap == 0:
+                level_ranges.append((boat_offset, n_b_for_level))
+            else:
+                level_ranges.append(None)
+            boat_offset += n_b_for_level
+
+        for li in range(len(levels)):
+            if level_ranges[li] is None:
+                continue
+            offset, n_b = level_ranges[li]
+            k_list = sorted(k for k in range(N) if lvl_of[k] == li)
+            forbidden = [b for b in range(n_boats) if not (offset <= b < offset + n_b)]
+            for kidx in k_list:
+                for d, day in enumerate(days):
+                    if day in restricted:
+                        for b in forbidden:
+                            m.Add(x[kidx, d, b] == 0)
 
     def presence(d, b, li):
         p = m.NewBoolVar(f"pres_{d}_{b}_{li}")
@@ -116,8 +150,17 @@ def build_model(kids: List[Kid], cfg: Config) -> dict:
     m.Add(total_distinct == (sum(diverse_terms) if diverse_terms else 0))
 
     # C: minimize repeat co-boatings
+    # Pair pruning: a pair that can never share a boat on any day has repeat=0
+    # by definition; skip creating variables for it. A pair can share on day d
+    # if: (a) the day is diverse, or (b) abs(level diff) <= adj. If neither
+    # condition can ever be met (no diverse days AND diff > adj), prune it.
     pair_rep = {}
     for k1, k2 in combinations(range(N), 2):
+        if _prune_pairs:
+            can_share = bool(diverse) or abs(lvl_of[k1] - lvl_of[k2]) <= cfg.adj
+            if not can_share:
+                continue  # repeat count is 0; omit variables
+
         meets = []
         for d in range(D):
             sb = []
@@ -145,21 +188,30 @@ def build_model(kids: List[Kid], cfg: Config) -> dict:
 
 
 def staged_solve(P: dict, cfg: Config,
-                 on_progress: Optional[Callable[[str, str, int], None]] = None):
+                 on_progress: Optional[Callable[[str, str, int], None]] = None,
+                 *, _warmstart: bool = True):
     """Solve lexicographically A > B > C, locking each stage before the next.
 
     on_progress(label, status_name, value) is called after each stage.
     Returns (solver, stats_dict).
     """
     m = P["model"]
+    x = P["x"]
+    N, D, n_boats = P["N"], P["D"], P["n_boats"]
     A, B, C = P["total_mixed"], P["total_distinct"], P["total_repeats"]
 
-    def run(obj, sense, secs, label):
+    def run(obj, sense, secs, label, hints=None):
         m.ClearObjective()
         m.Minimize(obj) if sense == "min" else m.Maximize(obj)
+        if hints is not None:
+            for var, val in hints:
+                m.AddHint(var, val)
         s = cp_model.CpSolver()
         s.parameters.max_time_in_seconds = secs
         s.parameters.num_search_workers = cfg.workers
+        s.parameters.linearization_level = 2
+        s.parameters.symmetry_level = 2
+        s.parameters.cp_model_presolve = True
         st = s.Solve(m)
         if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise SolveError(
@@ -172,9 +224,23 @@ def staged_solve(P: dict, cfg: Config,
 
     _, _, va = run(A, "min", cfg.stage_seconds, "A mixed")
     m.Add(A <= int(va))
-    _, _, vb = run(B, "max", cfg.stage_seconds, "B diversity")
+    sB, _, vb = run(B, "max", cfg.stage_seconds, "B diversity")
     m.Add(B >= int(vb))
-    sC, stC, vc = run(C, "min", cfg.seconds, "C repeats")
+
+    # Warm-start stage C from stage B's variable assignment.
+    # Hint only diverse-day variables: restricted days are heavily constrained
+    # by the prefixing (small search space) so CP-SAT handles them better from
+    # scratch; the diverse-day assignment from stage B is a good seed for C.
+    hints = None
+    if _warmstart:
+        diverse_set = set(cfg.diverse)
+        hints = [(x[k, d, b], sB.Value(x[k, d, b]))
+                 for k in range(N) for d in range(D) for b in range(n_boats)
+                 if P["days"][d] in diverse_set]
+        if not hints:  # no diverse days — hint everything
+            hints = [(x[k, d, b], sB.Value(x[k, d, b]))
+                     for k in range(N) for d in range(D) for b in range(n_boats)]
+    sC, stC, vc = run(C, "min", cfg.seconds, "C repeats", hints=hints)
 
     return sC, dict(mixed=int(va), distinct=int(vb), repeats=int(vc),
                     status_C=sC.StatusName(stC))

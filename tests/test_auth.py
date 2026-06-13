@@ -166,29 +166,6 @@ class TestAuthMode:
 
 
 # ---------------------------------------------------------------------------
-# /me endpoint
-# ---------------------------------------------------------------------------
-
-class TestMeEndpoint:
-    def test_me_returns_zero_in_open_mode(self, open_client):
-        client, _ = open_client
-        r = client.get("/me")
-        assert r.status_code == 200
-        assert r.json()["member_id"] == 0
-
-    def test_me_returns_401_when_not_logged_in(self, auth_client):
-        client, _ = auth_client
-        assert client.get("/me").status_code == 401
-
-    def test_me_returns_name_after_login(self, auth_client):
-        client, _ = auth_client
-        _login(client, "Alice", "secret123")
-        r = client.get("/me")
-        assert r.status_code == 200
-        assert r.json()["name"] == "Alice"
-
-
-# ---------------------------------------------------------------------------
 # POST /instructor — create new instructor
 # ---------------------------------------------------------------------------
 

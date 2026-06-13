@@ -1,22 +1,4 @@
-"""Web server for boatsched — FastAPI/uvicorn.
-
-HTTP endpoints (all preserved from prior stdlib version):
-  GET  /                          → viewer.html
-  GET  /config                    → solver config JSON
-  GET  /seasons                   → list seasons
-  POST /seasons                   → create season
-  GET  /boats                     → list boats
-  POST /boat                      → rename boat
-  GET  /schedules                 → list schedules for season
-  GET  /schedule                  → get schedule rows
-  POST /solve                     → start background solve job
-  GET  /status                    → poll solve job
-
-New endpoints:
-  POST /swap                      → swap two kids between boats
-  WS   /collab/{schedule_id}      → Yjs collaborative editing
-  POST /schedule/{schedule_id}/commit → validate & write Yjs state to DB
-"""
+"""Web server for boatsched — FastAPI/uvicorn."""
 from __future__ import annotations
 
 import argparse
@@ -266,29 +248,6 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     # -----------------------------------------------------------------------
     # Auth — login / logout / session info
     # -----------------------------------------------------------------------
-
-    @app.post("/logout")
-    async def do_logout(request: Request):
-        token = request.cookies.get("bsession")
-        if token:
-            sessions.pop(token, None)
-        resp = JSONResponse({"ok": True})
-        resp.delete_cookie("bsession")
-        return resp
-
-    @app.get("/me")
-    async def me(request: Request):
-        token = request.cookies.get("bsession")
-        member_id = _auth_member(token)
-        if member_id is None:
-            return JSONResponse({"error": "not authenticated"}, status_code=401)
-        if member_id == 0:
-            return {"member_id": 0, "name": None}
-        row = await asyncio.to_thread(lambda: db_conn.execute(
-            "SELECT m.name FROM member m JOIN instructor i ON i.member_id = m.id"
-            " WHERE m.id=?", (member_id,)
-        ).fetchone())
-        return {"member_id": member_id, "name": row["name"] if row else None}
 
     # -----------------------------------------------------------------------
     # Instructor password management
