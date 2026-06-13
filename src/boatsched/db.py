@@ -224,32 +224,50 @@ def drop_legacy_camp_tables(conn: sqlite3.Connection) -> None:
 
 def add_or_update_members(conn: sqlite3.Connection, members: list,
                           season_id=None) -> None:
-    """Upsert member names; if season_id given, also upsert enrollment levels.
+    """Upsert members from a roster; if season_id given, also upsert enrollments.
 
     members: list of (name, level) tuples.
     season_id: if provided, creates/updates an enrollment row for each member
                in that season with the corresponding level.
+
+    Level 'k' entries are treated as new participants and are inserted into
+    the member table automatically (INSERT OR IGNORE).  All other levels are
+    treated as returning participants who must already exist in the member
+    table; a missing name raises RuntimeError so a silently shorter roster
+    is never handed to the solver.
     """
-    # Insert members by name only — level no longer lives on member.
+    # Auto-create members for k-level (new participants this season).
     conn.executemany(
-        "INSERT INTO member (name) VALUES (?)"
-        " ON CONFLICT(name) DO NOTHING",
-        [(name,) for name, _ in members],
+        "INSERT INTO member (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
+        [(name,) for name, level in members if level == "k"],
     )
     conn.commit()
 
+    # Resolve member IDs; non-k members must already be in the table.
+    id_map: dict[str, int] = {}
+    missing = []
+    for name, level in members:
+        row = conn.execute(
+            "SELECT id FROM member WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            missing.append(f"'{name}' (level '{level}')")
+        else:
+            id_map[name] = row["id"]
+    if missing:
+        raise RuntimeError(
+            "returning members not found in member table: "
+            + ", ".join(missing)
+            + "; only 'k'-level entries are auto-created"
+        )
+
     if season_id is not None:
         for name, level in members:
-            row = conn.execute(
-                "SELECT id FROM member WHERE name = ?", (name,)
-            ).fetchone()
-            if row is None:
-                raise RuntimeError(f"member '{name}' not found after upsert")
             conn.execute(
                 "INSERT INTO enrollment (member_id, season_id, level)"
                 " VALUES (?, ?, ?)"
                 " ON CONFLICT(member_id, season_id) DO UPDATE SET level = excluded.level",
-                (row["id"], season_id, level),
+                (id_map[name], season_id, level),
             )
         conn.commit()
 

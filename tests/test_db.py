@@ -78,14 +78,24 @@ class TestInsert:
 
     def test_multiple_members(self, conn):
         members = [("Alice", "k"), ("Bob", "b"), ("Carol", "A"), ("Dave", "B")]
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         _assert_names_present(conn, members)
 
     def test_row_count_matches_input(self, conn):
         members = [("Alice", "k"), ("Bob", "b"), ("Carol", "A")]
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
         assert count == len(members)
+
+    def test_non_k_member_not_found_raises(self, conn):
+        with pytest.raises(RuntimeError, match="not found"):
+            add_or_update_members(conn, [("Ghost", "b")])
 
     def test_empty_list_inserts_nothing(self, conn):
         add_or_update_members(conn, [])
@@ -103,6 +113,8 @@ class TestUpdate:
         assert count == 1
 
     def test_unchanged_member_stays_intact(self, conn):
+        conn.execute("INSERT INTO member (name) VALUES ('Bob')")
+        conn.commit()
         add_or_update_members(conn, [("Alice", "k"), ("Bob", "b")])
         add_or_update_members(conn, [("Alice", "A")])
         _assert_names_present(conn, [("Alice", "A"), ("Bob", "b")])
@@ -117,18 +129,27 @@ class TestCsvRoundTrip:
     def test_all_csv_names_in_db(self, conn):
         csv = b"name,level\nAlice,k\nBob,b\nCarol,A\nDave,B\n"
         members = parse_roster_bytes(csv)
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         _assert_names_present(conn, members)
 
     def test_csv_row_count_matches_db(self, conn):
         csv = b"name,level\nAlice,k\nBob,b\nCarol,A\nDave,B\n"
         members = parse_roster_bytes(csv)
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
         assert count == len(members)
 
     def test_large_roster_all_names_present(self, conn):
         members = roster_from_counts({"k": 12, "b": 16, "A": 12, "B": 12})
+        conn.executemany("INSERT INTO member (name) VALUES (?)",
+                         [(name,) for name, level in members if level != "k"])
+        conn.commit()
         add_or_update_members(conn, members)
         _assert_names_present(conn, members)
 
@@ -189,6 +210,8 @@ class TestEnrollment:
 
     def test_get_season_roster_returns_enrolled_members(self, fconn):
         sid = create_season(fconn, 2026)
+        fconn.execute("INSERT INTO member (name) VALUES ('Bob')")
+        fconn.commit()
         add_or_update_members(fconn, [("Alice", "k"), ("Bob", "b")], sid)
         roster = get_season_roster(fconn, sid)
         assert sorted(roster) == sorted([("Alice", "k"), ("Bob", "b")])
@@ -471,6 +494,9 @@ class TestSaveSchedule:
     def _seed(self, conn, year=2026):
         """Create season, add four members with enrollment, return season_id."""
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return sid
 
@@ -534,6 +560,9 @@ class TestSaveSchedule:
 class TestListSchedules:
     def _seed(self, conn, year=2026):
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return sid
 
@@ -573,6 +602,9 @@ class TestListSchedules:
 class TestGetSchedule:
     def _seed(self, conn, year=2026):
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return save_schedule(conn, sid, "{}", _RESULT_4)
 
@@ -609,6 +641,9 @@ class TestGetSchedule:
 class TestSwapAssignment:
     def _seed(self, conn, year=2026):
         sid = create_season(conn, year)
+        conn.executemany("INSERT OR IGNORE INTO member (name) VALUES (?)",
+                         [("Carol",), ("Dave",)])
+        conn.commit()
         add_or_update_members(conn, _MEMBERS_4, sid)
         return save_schedule(conn, sid, "{}", _RESULT_4)
 
