@@ -1,0 +1,58 @@
+name: CI/CD
+
+# Test on every push to main; deploy only if tests pass.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: docker
+    container:
+      image: python:3.11-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Run tests
+        run: pytest
+
+  deploy:
+    needs: test
+    runs-on: docker
+    container:
+      image: alpine:3.20
+    # Redundant guard (the trigger is already main-only): never deploy off main.
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Install ssh client
+        run: apk add --no-cache openssh-client
+
+      - name: Deploy over SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          # Write the deploy key and pinned host key to a private temp dir.
+          KEY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$KEY_DIR"' EXIT
+          install -m 600 /dev/null "$KEY_DIR/id_deploy"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$KEY_DIR/id_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KEY_DIR/known_hosts"
+
+          # Host key is pinned via known_hosts — StrictHostKeyChecking stays on.
+          ssh -i "$KEY_DIR/id_deploy" \
+              -o IdentitiesOnly=yes \
+              -o UserKnownHostsFile="$KEY_DIR/known_hosts" \
+              -o StrictHostKeyChecking=yes \
+              "$SSH_USER@$SSH_HOST" \
+              'bash /opt/boatsched/deploy/deploy.sh'
