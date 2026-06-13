@@ -7,12 +7,19 @@ on:
 
 jobs:
   test:
-    runs-on: docker
+    runs-on: codeberg-small
     container:
-      image: python:3.11-slim
+      image: ghcr.io/catthehacker/ubuntu:act-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the deployment baseline (Dockerfile / provisioning), within
+          # pyproject's requires-python (>=3.9).
+          python-version: '3.11'
 
       - name: Install package with dev extras
         run: |
@@ -24,15 +31,14 @@ jobs:
 
   deploy:
     needs: test
-    runs-on: docker
+    runs-on: codeberg-small
     container:
-      image: alpine:3.20
+      image: ghcr.io/catthehacker/ubuntu:act-latest
     # Redundant guard (the trigger is already main-only): never deploy off main.
     if: ${{ github.ref == 'refs/heads/main' }}
     steps:
-      - name: Install ssh client
-        run: apk add --no-cache openssh-client
-
+      # ssh client + git are already present in the image; no install needed.
+      # (These runners can't run a Docker daemon — we only SSH out, so that's fine.)
       - name: Deploy over SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
