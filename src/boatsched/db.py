@@ -123,6 +123,33 @@ def _create_tables(conn: sqlite3.Connection) -> None:
 # Idempotent migrations (called at server startup for existing databases)
 # ---------------------------------------------------------------------------
 
+def add_admin_column(conn: sqlite3.Connection) -> None:
+    """Add is_admin BOOLEAN to instructor table (idempotent)."""
+    try:
+        conn.execute(
+            "ALTER TABLE instructor ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def auto_grant_first_admin(conn: sqlite3.Connection) -> None:
+    """If no admin exists yet, promote all current instructors to admin.
+
+    Handles existing deployments upgrading to role-based access: instructors
+    that were created before admin roles existed had unrestricted access, so
+    they all become admins.
+    """
+    has_admin = conn.execute(
+        "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1"
+    ).fetchone()
+    if has_admin:
+        return
+    conn.execute("UPDATE instructor SET is_admin=1")
+    conn.commit()
+
+
 def add_yjs_state_column(conn: sqlite3.Connection) -> None:
     """Add yjs_state BLOB to schedule table (idempotent)."""
     try:
@@ -467,11 +494,20 @@ def verify_instructor_login(conn: sqlite3.Connection, name: str, password: str):
 
 def list_instructors(conn: sqlite3.Connection) -> list:
     return [dict(r) for r in conn.execute(
-        "SELECT i.member_id AS id, m.name,"
+        "SELECT i.member_id AS id, m.name, i.is_admin,"
         " (i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL) AS has_password"
         " FROM instructor i JOIN member m ON m.id = i.member_id"
         " ORDER BY m.name"
     )]
+
+
+def set_admin(conn: sqlite3.Connection, member_id: int, is_admin: bool) -> None:
+    """Set the is_admin flag for an instructor."""
+    conn.execute(
+        "UPDATE instructor SET is_admin=? WHERE member_id=?",
+        (1 if is_admin else 0, member_id),
+    )
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------

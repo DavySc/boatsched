@@ -190,6 +190,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         _db.add_enrollment_tables(db_conn)
         _db.drop_member_level_column(db_conn)
         _db.drop_legacy_camp_tables(db_conn)
+        _db.add_admin_column(db_conn)
+        _db.auto_grant_first_admin(db_conn)
 
     # Per-schedule Yjs docs and connected WebSocket sets (app-scoped state)
     docs: dict[int, pycrdt.Doc] = {}
@@ -207,6 +209,19 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             "SELECT 1 FROM instructor WHERE password_hash IS NOT NULL LIMIT 1"
         ).fetchone()
         return row is None
+
+    def _current_is_admin(request: Request) -> bool:
+        """True when the request comes from an admin, or when in open/no-DB mode."""
+        if _is_open():
+            return True
+        token = request.cookies.get("bsession")
+        mid = _auth_member(token)
+        if not mid:
+            return False
+        row = db_conn.execute(
+            "SELECT is_admin FROM instructor WHERE member_id=?", (mid,)
+        ).fetchone()
+        return bool(row and row["is_admin"])
 
     def _auth_member(token: Optional[str]) -> Optional[int]:
         """Return member_id for a valid session token, 0 in open/no-DB mode, else None."""
@@ -294,6 +309,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     async def create_instructor(request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
         try:
             body = await request.json()
             name = str(body["name"]).strip()
@@ -315,8 +332,13 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             ).fetchone()
             if already:
                 return None
+            # First instructor auto-gets admin; subsequent ones do not.
+            no_admins = db_conn.execute(
+                "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1"
+            ).fetchone() is None
             db_conn.execute(
-                "INSERT INTO instructor (member_id) VALUES (?)", (member_id,)
+                "INSERT INTO instructor (member_id, is_admin) VALUES (?, ?)",
+                (member_id, 1 if no_admins else 0),
             )
             db_conn.commit()
             return member_id
@@ -345,11 +367,14 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         ).fetchone())
         if row is None:
             return JSONResponse({"error": "not an instructor"}, status_code=404)
-        # In auth mode, only authenticated instructors may change passwords
         if not _is_open():
             token = request.cookies.get("bsession")
-            if _auth_member(token) is None:
+            caller = _auth_member(token)
+            if caller is None:
                 return JSONResponse({"error": "not authenticated"}, status_code=401)
+            # Non-admins may only change their own password.
+            if row["member_id"] != caller and not _current_is_admin(request):
+                return JSONResponse({"error": "admin required to change another instructor's password"}, status_code=403)
         await asyncio.to_thread(
             _db.set_instructor_password, db_conn, row["member_id"], password)
         return {"ok": True}
@@ -368,6 +393,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
     async def create_season(request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database configured"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
         try:
             body = await request.json()
             year = int(body["year"])
@@ -435,6 +462,8 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
 
     @app.post("/solve")
     async def solve_endpoint(request: Request, season_id: Optional[str] = None):
+        if db_conn is not None and not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
         ctype = request.headers.get("content-type", "")
         raw = await request.body()
         if ctype.startswith("multipart/form-data"):
@@ -662,12 +691,16 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
         if member_id is None:
             return JSONResponse({"error": "not authenticated"}, status_code=401)
         if member_id == 0 or db_conn is None:
-            return {"member_id": 0, "name": "instructor"}
+            return {"member_id": 0, "name": "instructor", "is_admin": True}
         row = await asyncio.to_thread(lambda: db_conn.execute(
-            "SELECT m.name FROM member m JOIN instructor i ON i.member_id = m.id"
+            "SELECT m.name, i.is_admin"
+            " FROM member m JOIN instructor i ON i.member_id = m.id"
             " WHERE m.id=?", (member_id,)
         ).fetchone())
-        return {"member_id": member_id, "name": row["name"] if row else None}
+        is_admin = _is_open() or bool(row and row["is_admin"])
+        return {"member_id": member_id,
+                "name": row["name"] if row else None,
+                "is_admin": is_admin}
 
     # -----------------------------------------------------------------------
     # API: members — list and bulk-seed
@@ -679,10 +712,35 @@ def create_app(cfg: Config, db_conn=None) -> FastAPI:
             raise HTTPException(503, "no database")
         return await asyncio.to_thread(_db.list_members, db_conn)
 
+    @app.post("/api/instructors/{member_id}/set-admin")
+    async def set_instructor_admin(member_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
+        try:
+            body = await request.json()
+            is_admin = bool(body["is_admin"])
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        # Prevent an admin from removing their own admin status (lockout protection).
+        token = request.cookies.get("bsession")
+        if _auth_member(token) == member_id and not is_admin:
+            return JSONResponse({"error": "cannot remove own admin status"}, status_code=400)
+        row = db_conn.execute(
+            "SELECT 1 FROM instructor WHERE member_id=?", (member_id,)
+        ).fetchone()
+        if row is None:
+            return JSONResponse({"error": "not an instructor"}, status_code=404)
+        await asyncio.to_thread(_db.set_admin, db_conn, member_id, is_admin)
+        return {"ok": True}
+
     @app.post("/api/members/import")
     async def import_members_api(request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse({"error": "admin required"}, status_code=403)
         raw = await request.body()
         ctype = request.headers.get("content-type", "")
         if "multipart" in ctype:
