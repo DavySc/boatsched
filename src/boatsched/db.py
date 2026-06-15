@@ -150,6 +150,44 @@ def auto_grant_first_admin(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def make_name_index_nocase(conn: sqlite3.Connection) -> None:
+    """Rebuild ix_unique_name as a case-insensitive (NOCASE) unique index.
+
+    Member names were matched case-sensitively (SQLite's default BINARY
+    collation), so a roster/import entry like 'van Aarle' would not match a
+    stored 'Van Aarle' and was silently created as a duplicate. Making the
+    unique index NOCASE also makes the INSERT OR IGNORE / ON CONFLICT(name)
+    insert paths match case-insensitively.
+
+    Idempotent: a no-op once the index is already NOCASE. Raises RuntimeError
+    if the table already contains names that collide only by case, since
+    merging them needs human judgement (which row keeps the enrollments and
+    boat assignments).
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_unique_name'"
+    ).fetchone()
+    if row is not None and row["sql"] and "NOCASE" in row["sql"].upper():
+        return
+
+    dups = conn.execute(
+        "SELECT group_concat(name, ' | ') AS names"
+        " FROM member GROUP BY name COLLATE NOCASE HAVING COUNT(*) > 1"
+    ).fetchall()
+    if dups:
+        groups = "; ".join(r["names"] for r in dups)
+        raise RuntimeError(
+            "cannot make member names case-insensitive: existing names collide "
+            f"only by case and must be merged manually first: {groups}"
+        )
+
+    conn.execute("DROP INDEX IF EXISTS ix_unique_name")
+    conn.execute(
+        "CREATE UNIQUE INDEX ix_unique_name ON member(name COLLATE NOCASE)"
+    )
+    conn.commit()
+
+
 def add_yjs_state_column(conn: sqlite3.Connection) -> None:
     """Add yjs_state BLOB to schedule table (idempotent)."""
     try:
@@ -275,7 +313,7 @@ def add_or_update_members(conn: sqlite3.Connection, members: list,
     missing = []
     for name, level in members:
         row = conn.execute(
-            "SELECT id FROM member WHERE name = ?", (name,)
+            "SELECT id FROM member WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone()
         if row is None:
             missing.append(f"'{name}' (level '{level}')")
@@ -399,7 +437,7 @@ def save_schedule(conn: sqlite3.Connection, season_id: int,
     assignments = []
     for row in result:
         member = conn.execute(
-            "SELECT id FROM member WHERE name = ?", (row["name"],)
+            "SELECT id FROM member WHERE name = ? COLLATE NOCASE", (row["name"],)
         ).fetchone()
         if member is None:
             raise RuntimeError(f"member '{row['name']}' not found in DB")
@@ -454,7 +492,7 @@ def swap_assignment(conn: sqlite3.Connection, schedule_id: int,
         return conn.execute(
             "SELECT ba.id, ba.boat_id FROM boat_assignment ba"
             " JOIN member m ON m.id = ba.member_id"
-            " WHERE ba.schedule_id=? AND ba.day=? AND m.name=?",
+            " WHERE ba.schedule_id=? AND ba.day=? AND m.name=? COLLATE NOCASE",
             (schedule_id, day, name),
         ).fetchone()
 
@@ -503,7 +541,8 @@ def verify_instructor_login(conn: sqlite3.Connection, name: str, password: str):
     row = conn.execute(
         "SELECT i.member_id, i.password_hash, i.password_salt"
         " FROM instructor i JOIN member m ON m.id = i.member_id"
-        " WHERE m.name=? AND i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL",
+        " WHERE m.name=? COLLATE NOCASE"
+        " AND i.password_hash IS NOT NULL AND i.password_salt IS NOT NULL",
         (name,),
     ).fetchone()
     if row is None:
@@ -545,7 +584,9 @@ def ensure_admin(conn: sqlite3.Connection, name: str, password: str) -> bool:
     name = (name or "").strip()
     if not name or not password:
         raise ValueError("admin name and password are required")
-    row = conn.execute("SELECT id FROM member WHERE name=?", (name,)).fetchone()
+    row = conn.execute(
+        "SELECT id FROM member WHERE name=? COLLATE NOCASE", (name,)
+    ).fetchone()
     member_id = row["id"] if row else conn.execute(
         "INSERT INTO member (name) VALUES (?)", (name,)
     ).lastrowid
@@ -612,7 +653,7 @@ def replace_assignments(conn: sqlite3.Connection, schedule_id: int,
     rows = []
     for name, day, boat_id in assignments:
         member = conn.execute(
-            "SELECT id FROM member WHERE name=?", (name,)
+            "SELECT id FROM member WHERE name=? COLLATE NOCASE", (name,)
         ).fetchone()
         if member is None:
             conn.rollback()
