@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    runs-on: codeberg-small
+    runs-on: ubuntu-latest
     # Fail clearly if something hangs instead of burning the runner's wall-clock cap.
     timeout-minutes: 20
     container:
