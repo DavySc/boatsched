@@ -584,6 +584,7 @@ function fetchSchedule(id){
     stopTimer();
     if(data.error)throw new Error(data.error);
     rows=data.rows;stats=null;currentScheduleId=id;
+    rememberLevels(rows);   // authoritative levels before collab rebuilds rows
     scheduleStartDate=data.start_date||null;showApp();
   }).catch(e=>{stopTimer();err.textContent="⚠ "+e.message;
     err.classList.remove("hidden");show("loader");});
@@ -625,6 +626,7 @@ function poll(id){
     if(j.status==="error"){err.textContent="&#9888; "+j.error;
       err.classList.remove("hidden");show("loader");return;}
     rows=j.result;stats=j.stats;scheduleStartDate=null;
+    rememberLevels(rows);   // solver result carries levels; keep them for collab
     if(j.schedule_id!=null){currentScheduleId=j.schedule_id;
       if(HAS_DB&&selectedSeason)loadSchedules(selectedSeason);}
     showApp();
@@ -656,16 +658,31 @@ function renderLegend(){
   h+=`<span><i class="dot" style="background:var(--mix)"></i>Gemengde boot</span>`;
   $("legend").innerHTML=h;}
 
+// Authoritative name→level map. The Yjs collab doc stores only names (no
+// levels), so when updateRowsFromYjs() rebuilds rows from it, levels must be
+// re-derived. /schedule returns canonical member names while the Yjs doc keeps
+// the solver/roster names, which can differ in case (members are unique
+// case-insensitively) — so we key this map by lower-cased name and keep it
+// across rebuilds rather than re-deriving from the (already rebuilt) rows.
+let LEVEL_OF={};
+const _lvKey=n=>String(n||"").trim().toLowerCase();
+function rememberLevels(rs){
+  for(const r of rs||[]) if(r.level) LEVEL_OF[_lvKey(r.name)]=r.level;
+}
+function levelForName(name){
+  return LEVEL_OF[_lvKey(name)]||"";
+}
+
 // ── Yjs collab helpers ─────────────────────────────────────────
 function updateRowsFromYjs(){
   if(!ySchedule)return;
-  const levelOf={};rows.forEach(r=>{levelOf[r.name]=r.level;});
+  rememberLevels(rows);          // capture any levels currently in hand
   const newRows=[];
   for(const[key,members]of ySchedule.entries()){
     if(key.startsWith("_"))continue;
     const colon=key.indexOf(":");if(colon<0)continue;
     const day=key.slice(0,colon),boat=parseInt(key.slice(colon+1));
-    for(const name of members)newRows.push({day,boat,name,level:levelOf[name]||""});
+    for(const name of members)newRows.push({day,boat,name,level:levelForName(name)});
   }
   rows=newRows;
 }
@@ -834,7 +851,7 @@ function renderByKid(){
   const v=$("view");v.innerHTML="";
   const days=dayList();const idx={};
   for(const r of rows){(idx[r.day]??={});(idx[r.day][r.boat]??=[]).push(r);}
-  const levelOf={};rows.forEach(r=>levelOf[r.name]=r.level);
+  const levelOf={};rows.forEach(r=>levelOf[r.name]=r.level||levelForName(r.name));
   const kids=[...new Set(rows.map(r=>r.name))].sort((a,b)=>
     (LV_RANK[levelOf[a]]??99)-(LV_RANK[levelOf[b]]??99)||a.localeCompare(b));
   const pairCounts=computePairCounts();
