@@ -412,6 +412,52 @@ def get_season_roster(conn: sqlite3.Connection, season_id: int) -> list:
     return [(r["name"], r["level"]) for r in rows]
 
 
+def set_enrollment_level(conn: sqlite3.Connection, member_id: int,
+                         season_id: int, level: str) -> bool:
+    """Update the level of an existing enrollment row.
+
+    Unlike add_enrollment (which upserts), this only touches a row that already
+    exists — it never creates one — so callers can distinguish "no such student
+    in this enrollment" (returns False) from a real update (returns True). The
+    level is constrained to ('k','b','A','B') by the table's CHECK; an invalid
+    value raises sqlite3.IntegrityError and should be validated by the caller.
+    """
+    cur = conn.execute(
+        "UPDATE enrollment SET level = ? WHERE member_id = ? AND season_id = ?",
+        (level, member_id, season_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_enrolled_students(conn: sqlite3.Connection, season_id: int) -> list:
+    """Return [(name, level)] for non-instructor members enrolled in season_id.
+
+    "Students" are members without an instructor row. Used by the CSV export.
+    """
+    rows = conn.execute(
+        "SELECT m.name, e.level"
+        " FROM enrollment e"
+        " JOIN member m ON m.id = e.member_id"
+        " WHERE e.season_id = ?"
+        "   AND m.id NOT IN (SELECT member_id FROM instructor)"
+        " ORDER BY m.name",
+        (season_id,),
+    ).fetchall()
+    return [(r["name"], r["level"]) for r in rows]
+
+
+def is_student(conn: sqlite3.Connection, member_id: int, season_id: int) -> bool:
+    """True when member_id is enrolled in season_id and is not an instructor."""
+    row = conn.execute(
+        "SELECT 1 FROM enrollment e"
+        " WHERE e.member_id = ? AND e.season_id = ?"
+        "   AND e.member_id NOT IN (SELECT member_id FROM instructor)",
+        (member_id, season_id),
+    ).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Season / schedule helpers
 # ---------------------------------------------------------------------------

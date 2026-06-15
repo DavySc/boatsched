@@ -344,7 +344,10 @@ class TestStartDateAndLocking:
                               (schedule_id,)).fetchone()
         assert row["start_date"] == "2099-06-01"
 
-    def test_past_start_date_locks_swap(self, auth_db):
+    def test_past_start_date_does_not_block_admin_swap(self, auth_db):
+        # Boat assignments are now admin-only and admins bypass the start-date
+        # lock entirely (feature: student level editing, Part 1). A past start
+        # date no longer freezes edits for an admin.
         client, db_conn = auth_db
         _login(client, "Admin", "adminpw")
         schedule_id = self._solve_and_get_schedule(client, db_conn, 4003)
@@ -355,17 +358,17 @@ class TestStartDateAndLocking:
         a, b = sat[0]["name"], next(r["name"] for r in sat[1:] if r["boat"] != sat[0]["boat"])
         r = client.post("/swap", json={"schedule_id": schedule_id, "day": "Sat",
                                        "name_a": a, "name_b": b})
-        assert r.status_code == 403
-        assert "locked" in r.json()["error"].lower()
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
 
-    def test_past_start_date_locks_commit(self, auth_db):
+    def test_past_start_date_does_not_block_admin_commit(self, auth_db):
         client, db_conn = auth_db
         _login(client, "Admin", "adminpw")
         schedule_id = self._solve_and_get_schedule(client, db_conn, 4004)
         client.post(f"/schedule/{schedule_id}/start-date",
                     json={"start_date": "2000-01-01"})
         r = client.post(f"/schedule/{schedule_id}/commit")
-        assert r.status_code == 403
+        assert r.status_code == 200
 
     def test_no_db_start_date_returns_503(self, tmp_path):
         app = create_app(CFG)

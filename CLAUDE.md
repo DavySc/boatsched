@@ -81,10 +81,17 @@ boatsched --counts k=12 b=16 A=12 B=12 --boats 13
 | GET | `/schedule?id=` | Get schedule rows + start date | auth |
 | POST | `/solve?season_id=` | Start background solve job | admin (with DB) |
 | GET | `/status?id=` | Poll solve job | auth |
-| POST | `/swap` | Swap two kids between boats | auth |
-| WS | `/collab/{schedule_id}` | Yjs collaborative editing | auth |
-| POST | `/schedule/{id}/commit` | Validate and write Yjs state to DB | auth |
-| POST | `/schedule/{id}/start-date` | Set schedule start date (locks edits) | auth |
+| POST | `/swap` | Swap two kids between boats | admin |
+| WS | `/collab/{schedule_id}` | Yjs collaborative editing (non-admins observe only) | auth |
+| POST | `/schedule/{id}/commit` | Validate and write Yjs state to DB | admin |
+| POST | `/schedule/{id}/start-date` | Set schedule start date | auth |
+
+> **Boat-assignment editing is admin-only at all times.** `/swap`, `/commit`
+> and WS update frames require an admin (`{"detail": "Only admins may edit boat
+> assignments"}`, 403, for non-admins). Admins are **not** blocked by the
+> start-date lock; the lock now only drives the read-only UI badge, not server
+> enforcement. Non-admins may still open a `/collab` socket to watch live edits,
+> but any update frame they send is dropped.
 
 #### Instructor / auth
 
@@ -108,6 +115,20 @@ boatsched --counts k=12 b=16 A=12 B=12 --boats 13
 | PUT | `/api/members/{id}` | Rename a member `{name}` | admin |
 | DELETE | `/api/members/{id}` | Soft-delete (`active=0`); 409 if member is an instructor | admin |
 | POST | `/api/members/import` | Seed members from a CSV with a `name` column | admin |
+
+#### Enrollment / student levels (JSON / CSV)
+
+> `{enrollment_id}` is the **season id** — enrollments are keyed by
+> `(member_id, season_id)`; there is no separate `enrollment_id` column.
+
+| Method | Path | Description | Admin? |
+|--------|------|-------------|--------|
+| PATCH | `/enrollment/{enrollment_id}/member/{member_id}/level` | Set a student's level for the season (`{"level": "k\|b\|A\|B"}`); 400 on invalid level, 404 if not an enrolled non-instructor student | admin |
+| GET | `/enrollment/{enrollment_id}/students/export` | CSV of non-instructor members (`name,level`) | admin |
+
+> Student levels are **always admin-only**, independent of the schedule lock.
+> Levels reuse the existing `enrollment.level` enum (`'k'\|'b'\|'A'\|'B'`,
+> enforced by the table CHECK and tied to the solver ordering) — not free text.
 
 > **Known gap:** `viewer.html`'s evaluation cards call `GET`/`POST /api/progress`,
 > but no such route exists in `server.py` — those calls fail silently (wrapped
