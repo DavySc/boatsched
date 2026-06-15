@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import date as _date
 import importlib.resources as resources
 import json
 import os
@@ -20,7 +19,7 @@ from typing import Optional
 import pycrdt
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from .solver import Config, solve
 from .roster import parse_roster_bytes, RosterError
@@ -28,6 +27,12 @@ from . import db as _db
 
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+
+# Student levels are a fixed enum, enforced by the enrollment.level CHECK
+# constraint in db._create_tables() and tied to the solver's level ordering.
+# The level-editing API validates against this set rather than accepting free
+# text, which the DB (and solver) would reject.
+VALID_LEVELS = ("k", "b", "A", "B")
 JOB_TTL = 3600          # seconds a finished job is retained for polling
 JOB_MAX = 200           # hard cap on retained jobs (bounds memory)
 
@@ -289,18 +294,20 @@ def create_app(
         ).fetchone()
         return row is None
 
-    def _current_is_admin(request: Request) -> bool:
-        """True when the request comes from an admin, or when in open/no-DB mode."""
+    def _member_is_admin(mid: Optional[int]) -> bool:
+        """True when member_id is an admin instructor, or when in open/no-DB mode."""
         if _is_open():
             return True
-        token = request.cookies.get("bsession")
-        mid = _auth_member(token)
         if not mid:
             return False
         row = db_conn.execute(
             "SELECT is_admin FROM instructor WHERE member_id=?", (mid,)
         ).fetchone()
         return bool(row and row["is_admin"])
+
+    def _current_is_admin(request: Request) -> bool:
+        """True when the request comes from an admin, or when in open/no-DB mode."""
+        return _member_is_admin(_auth_member(request.cookies.get("bsession")))
 
     def _auth_member(token: Optional[str]) -> Optional[int]:
         """Return member_id for a valid, unexpired session, 0 in open mode, else None."""
@@ -323,18 +330,6 @@ def create_app(
             "bsession", token, httponly=True, samesite="lax",
             secure=secure_cookies, max_age=session_ttl, path="/",
         )
-
-    def _is_locked(schedule_id: int) -> bool:
-        """True when the schedule's start_date is today or in the past."""
-        if db_conn is None:
-            return False
-        start = _db.get_schedule_start_date(db_conn, schedule_id)
-        if not start:
-            return False
-        try:
-            return _date.fromisoformat(start) <= _date.today()
-        except ValueError:
-            return False
 
     _PUBLIC_PATHS = {
         "/", "/index.html",
@@ -666,6 +661,13 @@ def create_app(
     async def swap_endpoint(request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database"}, status_code=503)
+        # Boat assignments are admin-only at all times (before and after the
+        # start date). Admins are not blocked by the start-date lock; non-admins
+        # are always rejected. This replaces the former start-date lock gate.
+        if not _current_is_admin(request):
+            return JSONResponse(
+                {"detail": "Only admins may edit boat assignments"},
+                status_code=403)
         try:
             body = await request.json()
             schedule_id = int(body["schedule_id"])
@@ -674,8 +676,6 @@ def create_app(
             name_b = str(body["name_b"])
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        if _is_locked(schedule_id):
-            return JSONResponse({"error": "schedule is locked"}, status_code=403)
         try:
             await asyncio.to_thread(
                 _db.swap_assignment, db_conn, schedule_id, day, name_a, name_b)
@@ -688,11 +688,14 @@ def create_app(
     # -----------------------------------------------------------------------
 
     @app.post("/schedule/{schedule_id}/commit")
-    async def commit_schedule(schedule_id: int):
+    async def commit_schedule(schedule_id: int, request: Request):
         if db_conn is None:
             return JSONResponse({"error": "no database"}, status_code=503)
-        if _is_locked(schedule_id):
-            return JSONResponse({"error": "schedule is locked"}, status_code=403)
+        # Admin-only at all times; admins are not blocked by the start-date lock.
+        if not _current_is_admin(request):
+            return JSONResponse(
+                {"detail": "Only admins may edit boat assignments"},
+                status_code=403)
 
         doc = await _get_doc(schedule_id)
         sch = doc.get("schedule", type=pycrdt.Map)
@@ -736,6 +739,10 @@ def create_app(
         if _auth_member(token) is None:
             await ws.close(code=1008, reason="not authenticated")
             return
+        # Boat assignments are admin-only. Non-admins may still connect to
+        # observe live edits (they receive sync/updates), but any update frame
+        # they send is dropped — the WS analogue of the /swap and /commit 403.
+        is_admin = _member_is_admin(_auth_member(token))
 
         await ws.accept()
         doc = await _get_doc(schedule_id)
@@ -775,8 +782,9 @@ def create_app(
                         missing = doc.get_update(payload)
                         await ws.send_bytes(_encode_sync_step2(missing))
                     elif sub_type in (SYNC_STEP2, SYNC_UPDATE):
-                        if not _is_locked(schedule_id):
-                            # Apply, persist, and broadcast only when not locked
+                        if is_admin:
+                            # Apply, persist, and broadcast only for admins;
+                            # non-admin update frames are silently dropped.
                             doc.apply_update(payload)
                             state = doc.get_update()
                             await asyncio.to_thread(
@@ -897,6 +905,71 @@ def create_app(
                 ],
             }
         return await asyncio.to_thread(_query, db_conn)
+
+    # -----------------------------------------------------------------------
+    # Student level editing & export (admin-only, lock-independent)
+    #
+    # NOTE: enrollments are keyed by (member_id, season_id) — there is no
+    # separate enrollment_id column — so the {enrollment_id} path segment is the
+    # season id. Levels are always admin-editable regardless of schedule lock.
+    # -----------------------------------------------------------------------
+
+    @app.patch("/enrollment/{enrollment_id}/member/{member_id}/level")
+    async def set_student_level(enrollment_id: int, member_id: int,
+                                request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse(
+                {"detail": "Only admins may edit student levels"},
+                status_code=403)
+        try:
+            body = await request.json()
+            level = str(body["level"]).strip()
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        if level not in VALID_LEVELS:
+            return JSONResponse(
+                {"detail": f"level must be one of {list(VALID_LEVELS)}"},
+                status_code=400)
+
+        def _update(conn):
+            # 404 unless the member is an enrolled, non-instructor student.
+            if not _db.is_student(conn, member_id, enrollment_id):
+                return False
+            return _db.set_enrollment_level(conn, member_id, enrollment_id, level)
+
+        updated = await asyncio.to_thread(_update, db_conn)
+        if not updated:
+            return JSONResponse(
+                {"detail": "student not found in this enrollment"},
+                status_code=404)
+        return {"ok": True, "level": level}
+
+    @app.get("/enrollment/{enrollment_id}/students/export")
+    async def export_students(enrollment_id: int, request: Request):
+        if db_conn is None:
+            return JSONResponse({"error": "no database"}, status_code=503)
+        if not _current_is_admin(request):
+            return JSONResponse(
+                {"detail": "Only admins may export students"},
+                status_code=403)
+        students = await asyncio.to_thread(
+            _db.list_enrolled_students, db_conn, enrollment_id)
+        import csv
+        from io import StringIO
+        buf = StringIO()
+        writer = csv.writer(buf)
+        # TODO: add further export columns
+        writer.writerow(["name", "level"])
+        for name, level in students:
+            writer.writerow([name, level])
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition":
+                     f'attachment; filename="students_season_{enrollment_id}.csv"'},
+        )
 
     @app.post("/api/instructors/{member_id}/set-admin")
     async def set_instructor_admin(member_id: int, request: Request):

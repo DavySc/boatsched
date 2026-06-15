@@ -227,6 +227,21 @@
   .prog-table tr:hover td:first-child{background:#fdf9f4}
   .prog-wrap{overflow-x:auto}
   .lv-pill{display:inline-block;padding:2px 8px;border-radius:20px;color:#fff;font-size:11px;font-weight:700;letter-spacing:.04em}
+  /* Inline level editor (admin only) */
+  .level-edit{appearance:none;-webkit-appearance:none;border:2px solid transparent;border-radius:20px;
+    color:#fff;font:700 11px/1 inherit;letter-spacing:.04em;padding:3px 22px 3px 9px;cursor:pointer;
+    background-repeat:no-repeat;background-position:right 6px center;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M0 1l4 5 4-5' fill='white'/></svg>");
+    transition:border-color .15s ease,box-shadow .15s ease}
+  .level-edit option{color:#222;background:#fff}
+  .level-edit:focus{outline:none;box-shadow:0 0 0 3px rgba(31,122,140,.25)}
+  .level-edit.level-ok{border-color:#2a8a3a;box-shadow:0 0 0 2px rgba(42,138,58,.35)}
+  .level-edit.level-err{border-color:#c0392b;box-shadow:0 0 0 2px rgba(192,57,43,.35)}
+  .lock-icn{font-size:11px;opacity:.55;cursor:help}
+  @media(max-width:640px){
+    /* Comfortable touch target on mobile (≥44px). */
+    .level-edit{min-height:44px;min-width:44px;font-size:14px;padding:6px 26px 6px 12px}
+  }
   .badge-admin{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;
     text-transform:uppercase;padding:1px 5px;border-radius:4px;vertical-align:middle;
     background:var(--accent2);color:#fff;margin-left:4px}
@@ -569,6 +584,7 @@ function fetchSchedule(id){
     stopTimer();
     if(data.error)throw new Error(data.error);
     rows=data.rows;stats=null;currentScheduleId=id;
+    rememberLevels(rows);   // authoritative levels before collab rebuilds rows
     scheduleStartDate=data.start_date||null;showApp();
   }).catch(e=>{stopTimer();err.textContent="⚠ "+e.message;
     err.classList.remove("hidden");show("loader");});
@@ -610,6 +626,7 @@ function poll(id){
     if(j.status==="error"){err.textContent="&#9888; "+j.error;
       err.classList.remove("hidden");show("loader");return;}
     rows=j.result;stats=j.stats;scheduleStartDate=null;
+    rememberLevels(rows);   // solver result carries levels; keep them for collab
     if(j.schedule_id!=null){currentScheduleId=j.schedule_id;
       if(HAS_DB&&selectedSeason)loadSchedules(selectedSeason);}
     showApp();
@@ -641,16 +658,31 @@ function renderLegend(){
   h+=`<span><i class="dot" style="background:var(--mix)"></i>Gemengde boot</span>`;
   $("legend").innerHTML=h;}
 
+// Authoritative name→level map. The Yjs collab doc stores only names (no
+// levels), so when updateRowsFromYjs() rebuilds rows from it, levels must be
+// re-derived. /schedule returns canonical member names while the Yjs doc keeps
+// the solver/roster names, which can differ in case (members are unique
+// case-insensitively) — so we key this map by lower-cased name and keep it
+// across rebuilds rather than re-deriving from the (already rebuilt) rows.
+let LEVEL_OF={};
+const _lvKey=n=>String(n||"").trim().toLowerCase();
+function rememberLevels(rs){
+  for(const r of rs||[]) if(r.level) LEVEL_OF[_lvKey(r.name)]=r.level;
+}
+function levelForName(name){
+  return LEVEL_OF[_lvKey(name)]||"";
+}
+
 // ── Yjs collab helpers ─────────────────────────────────────────
 function updateRowsFromYjs(){
   if(!ySchedule)return;
-  const levelOf={};rows.forEach(r=>{levelOf[r.name]=r.level;});
+  rememberLevels(rows);          // capture any levels currently in hand
   const newRows=[];
   for(const[key,members]of ySchedule.entries()){
     if(key.startsWith("_"))continue;
     const colon=key.indexOf(":");if(colon<0)continue;
     const day=key.slice(0,colon),boat=parseInt(key.slice(colon+1));
-    for(const name of members)newRows.push({day,boat,name,level:levelOf[name]||""});
+    for(const name of members)newRows.push({day,boat,name,level:levelForName(name)});
   }
   rows=newRows;
 }
@@ -775,7 +807,7 @@ function _daySectionEl(day,animate){
     const mixed=levels.length>1;if(mixed)mixedCount++;
     const tag=mixed?`${levels.length} niveaus`:levels[0];
     const tagCls=mixed?'':'lv-'+levels[0];
-    const drag=!!currentScheduleId&&!isLocked();
+    const drag=!!currentScheduleId&&IS_ADMIN;
     const boatAttr=HAS_DB?` data-boat-id="${bo}"`:"";
     const boatLabel=BOATS[bo]||"Boot "+bo;
     cards+=`<div class="boat ${mixed?'mixed':''}">
@@ -819,7 +851,7 @@ function renderByKid(){
   const v=$("view");v.innerHTML="";
   const days=dayList();const idx={};
   for(const r of rows){(idx[r.day]??={});(idx[r.day][r.boat]??=[]).push(r);}
-  const levelOf={};rows.forEach(r=>levelOf[r.name]=r.level);
+  const levelOf={};rows.forEach(r=>levelOf[r.name]=r.level||levelForName(r.name));
   const kids=[...new Set(rows.map(r=>r.name))].sort((a,b)=>
     (LV_RANK[levelOf[a]]??99)-(LV_RANK[levelOf[b]]??99)||a.localeCompare(b));
   const pairCounts=computePairCounts();
@@ -864,9 +896,21 @@ function isLocked(){
 }
 function updateLockUI(){
   const locked=isLocked();
-  $("commit-btn").disabled=locked;
-  $("commit-btn").classList.toggle("hidden",locked);
-  $("readonly-badge").classList.toggle("hidden",!locked);
+  // Boat assignments are admin-only now. Non-admins are read-only at all times;
+  // admins keep the editable view and see the lock badge once the start date
+  // has passed (informational — admins may still edit).
+  $("commit-btn").disabled=!IS_ADMIN;
+  $("commit-btn").classList.toggle("hidden",!IS_ADMIN);
+  const badge=$("readonly-badge");
+  if(!IS_ADMIN){
+    badge.textContent="Alleen-lezen · alleen beheerders";
+    badge.classList.remove("hidden");
+  }else if(locked){
+    badge.textContent="Startdatum verstreken";
+    badge.classList.remove("hidden");
+  }else{
+    badge.classList.add("hidden");
+  }
 }
 async function loadStudentsAndProgress(){
   if(!HAS_DB)return;
@@ -1585,6 +1629,8 @@ async function deleteMember(id,name){
 
 const LV_LABEL={k:"Ketelbinkie",b:"Bemanning",A:"A",B:"B"};
 const LV_COLOR={k:"var(--k)",b:"var(--b)",A:"var(--A)",B:"var(--B)"};
+// Valid levels for the inline editor — mirrors the enrollment.level CHECK enum.
+const PROG_LEVELS=["k","b","A","B"];
 
 async function renderProgression(){
   const wrap=$("prog-table-wrap");
@@ -1610,12 +1656,56 @@ async function renderProgression(){
     html+=`<tr><td>${escH(m.name)}</td>`;
     for(const s of seasons){
       const lv=m.levels[String(s.id)]||"";
-      html+=`<td>${lv?`<span class="lv-pill" style="background:${LV_COLOR[lv]}">${escH(lv)}</span>`:'<span style="color:var(--ink2);font-size:12px">—</span>'}</td>`;
+      html+=`<td>${levelCellHTML(lv,m.id,s.id)}</td>`;
     }
     html+='</tr>';
   }
   html+='</tbody></table></div>';
   wrap.innerHTML=html;
+  // Admins edit a student's level inline; the change is PATCHed immediately.
+  if(IS_ADMIN){
+    wrap.querySelectorAll("select.level-edit").forEach(sel=>{
+      sel.dataset.prev=sel.value;
+      sel.addEventListener("change",()=>commitLevelEdit(sel));
+    });
+  }
+}
+
+// Render one level cell: an inline <select> for admins (only where an
+// enrollment already exists), read-only pill + lock icon for everyone else.
+function levelCellHTML(lv,memberId,seasonId){
+  if(!lv) return '<span style="color:var(--ink2);font-size:12px">—</span>';
+  if(!IS_ADMIN)
+    return `<span class="lv-pill" style="background:${LV_COLOR[lv]}">${escH(lv)}</span>`
+      +' <span class="lock-icn" title="Alleen beheerders mogen niveaus wijzigen">🔒</span>';
+  const opts=PROG_LEVELS.map(l=>
+    `<option value="${l}"${l===lv?" selected":""}>${escH(l)} · ${escH(LV_LABEL[l]||l)}</option>`
+  ).join("");
+  return `<select class="level-edit" data-member="${memberId}" data-season="${seasonId}"`
+    +` style="background:${LV_COLOR[lv]}">${opts}</select>`;
+}
+
+async function commitLevelEdit(sel){
+  sel.classList.remove("level-ok","level-err");
+  sel.removeAttribute("title");
+  const season=sel.dataset.season,member=sel.dataset.member;
+  try{
+    const r=await fetch(`/enrollment/${season}/member/${member}/level`,{
+      method:"PATCH",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({level:sel.value})});
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      throw new Error(d.detail||d.error||r.statusText);
+    }
+    sel.dataset.prev=sel.value;
+    sel.style.background=LV_COLOR[sel.value]||"";
+    sel.classList.add("level-ok");
+    setTimeout(()=>sel.classList.remove("level-ok"),1200);
+  }catch(e){
+    // Keep the edited value (do not revert); show the error inline.
+    sel.classList.add("level-err");
+    sel.title="Opslaan mislukt: "+e.message;
+  }
 }
 
 async function importMembers(){
