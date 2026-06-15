@@ -506,7 +506,7 @@ async function loadAppData(){
       CFG=c;
       RESTRICTED=new Set(c.restricted);DIVERSE=new Set(c.diverse);
       LV_RANK={};c.levels.forEach((l,i)=>LV_RANK[l]=i);
-      if(c.db){HAS_DB=true;$("season-bar").classList.remove("hidden");$("user-bar").classList.remove("hidden");loadSeasons();}
+      if(c.db){HAS_DB=true;$("season-bar").classList.remove("hidden");$("user-bar").classList.remove("hidden");loadSeasons(true);}
       _syncAdminUI();
       _syncDrop();
     }else{
@@ -523,6 +523,8 @@ function _syncAdminUI(){
   // Admin-only controls in the header bar
   $("members-modal-btn").classList.toggle("hidden",!IS_ADMIN||!HAS_DB);
   $("new-season-btn").classList.toggle("hidden",!IS_ADMIN);
+  // Non-admins can't create schedules — the reload button only switches schedule.
+  $("reload").textContent=IS_ADMIN?"↻ Nieuw rooster":"↻ Ander rooster";
 }
 
 async function doLogin(){
@@ -551,7 +553,7 @@ async function doLogin(){
 }
 
 // ── Season / schedule loading ──────────────────────────────────
-function loadSeasons(){
+function loadSeasons(autoOpen){
   fetch("/seasons").then(r=>r.json()).then(seasons=>{
     const pick=$("season-pick");
     pick.innerHTML='<option value="">— kies een seizoen —</option>';
@@ -561,13 +563,13 @@ function loadSeasons(){
     });
     if(seasons.length===1){
       pick.value=seasons[0].id;selectedSeason=String(seasons[0].id);
-      loadSchedules(seasons[0].id);
+      loadSchedules(seasons[0].id,autoOpen);
     }
     _syncDrop();
   }).catch(()=>{});
 }
-function loadSchedules(sid){
-  fetch("/schedules?season_id="+sid).then(r=>r.json()).then(scheds=>{
+function loadSchedules(sid,autoOpen){
+  return fetch("/schedules?season_id="+sid).then(r=>r.json()).then(scheds=>{
     const pick=$("schedule-pick");
     const newOpt=IS_ADMIN?'<option value="new">+ Nieuw rooster uploaden</option>':'';
     pick.innerHTML='<option value="">— selecteer —</option>'+newOpt;
@@ -575,6 +577,19 @@ function loadSchedules(sid){
       const o=document.createElement("option");
       o.value=s.id;o.textContent=(s.created||"").slice(0,16);pick.appendChild(o);
     });
+    // Hint text: non-admins can only pick existing schedules, never create one.
+    const hint=$("schedule-hint");
+    if(IS_ADMIN) hint.textContent='Kies een rooster hierboven of kies "Nieuw rooster uploaden".';
+    else hint.textContent=scheds.length?"Kies een rooster hierboven."
+                                       :"Er zijn nog geen roosters voor dit seizoen.";
+    // Open the most recent schedule by default (list is ordered newest-first).
+    if(autoOpen&&scheds.length){
+      const recent=scheds[0];
+      pick.value=String(recent.id);scheduleMode=recent.id;
+      fetchSchedule(recent.id);
+    }else if(currentScheduleId!=null){
+      pick.value=String(currentScheduleId);   // reflect an already-open schedule
+    }
     _syncDrop();
   }).catch(()=>{});
 }
@@ -1251,12 +1266,22 @@ $("reload").onclick=()=>{
   currentScheduleId=null;scheduleMode=null;scheduleStartDate=null;
   $("schedule-date-row").classList.add("hidden");
   if(HAS_DB){
-    selectedSeason=null;
-    $("schedule-bar").classList.add("hidden");
-    $("schedule-pick").innerHTML="";
-    loadSeasons();
+    if(IS_ADMIN&&selectedSeason){
+      // Admin: jump straight to the new-schedule upload for the current season
+      // (auto-open would otherwise bounce us back into the latest schedule).
+      scheduleMode="new";
+      const opt=$("schedule-pick").querySelector('option[value="new"]');
+      if(opt)$("schedule-pick").value="new";
+    }else{
+      // Non-admins (and admins with no season) return to the picker — no upload.
+      selectedSeason=null;
+      $("schedule-bar").classList.add("hidden");
+      $("schedule-pick").innerHTML="";
+      loadSeasons(false);
+    }
   }
   show("loader");
+  _syncDrop();
 };
 $("commit-btn").onclick=()=>{
   if(!currentScheduleId)return;
@@ -1778,7 +1803,7 @@ $("season-pick").addEventListener("change",e=>{
   selectedSeason=e.target.value||null;
   scheduleMode=null;currentScheduleId=null;
   $("schedule-pick").innerHTML="";
-  if(selectedSeason)loadSchedules(selectedSeason);
+  if(selectedSeason)loadSchedules(selectedSeason,true);  // open most recent by default
   _syncDrop();
 });
 $("schedule-pick").addEventListener("change",e=>{
