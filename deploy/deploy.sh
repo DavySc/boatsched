@@ -38,7 +38,7 @@ echo "==> Syncing dependencies into venv"
 
 # Restart via the scoped sudoers entry (exactly: systemctl restart boatsched).
 echo "==> Restarting boatsched service"
-sudo systemctl restart boatsched
+sudo systemctl restart boatsched.service
 
 # Give systemd a moment, then confirm it came back up.
 sleep 2
