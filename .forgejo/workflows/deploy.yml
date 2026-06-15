@@ -8,8 +8,13 @@ on:
 jobs:
   test:
     runs-on: codeberg-small
+    # Fail clearly if something hangs instead of burning the runner's wall-clock cap.
+    timeout-minutes: 20
     container:
-      image: ghcr.io/catthehacker/ubuntu:act-latest
+      # node:22-bookworm is a fraction of the catthehacker act image to pull on
+      # Codeberg's slow shared runners, yet still ships node (for the JS actions
+      # below) and git (buildpack-deps base, used by actions/checkout).
+      image: node:22-bookworm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,6 +25,10 @@ jobs:
           # Matches the deployment baseline (Dockerfile / provisioning), within
           # pyproject's requires-python (>=3.9).
           python-version: '3.11'
+          # Cache the pip download dir so the heavy ortools wheel isn't re-fetched
+          # on every run — the main thing pushing this job past the time limit.
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
 
       - name: Install package with dev extras
         run: |
@@ -27,7 +36,9 @@ jobs:
           pip install ".[dev]"
 
       - name: Run tests
-        run: pytest
+        # --no-cov: coverage is pure overhead for a pass/fail gate (it's collected
+        # locally via the pyproject addopts when developing).
+        run: pytest --no-cov
 
   deploy:
     needs: test
