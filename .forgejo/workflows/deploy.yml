@@ -51,7 +51,7 @@ jobs:
 
   deploy:
     needs: test
-    runs-on: codeberg-small
+    runs-on: ubuntu-latest
     container:
       image: ghcr.io/catthehacker/ubuntu:act-latest
     # Redundant guard (the trigger is already main-only): never deploy off main.
