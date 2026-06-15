@@ -245,6 +245,7 @@ def create_app(
         _db.drop_legacy_camp_tables(db_conn)
         _db.add_admin_column(db_conn)
         _db.auto_grant_first_admin(db_conn)
+        _db.make_name_index_nocase(db_conn)
 
     # Per-schedule Yjs docs and connected WebSocket sets (app-scoped state)
     docs: dict[int, pycrdt.Doc] = {}
@@ -437,7 +438,7 @@ def create_app(
 
         def _create():
             row = db_conn.execute(
-                "SELECT id FROM member WHERE name=?", (name,)
+                "SELECT id FROM member WHERE name=? COLLATE NOCASE", (name,)
             ).fetchone()
             member_id = row["id"] if row else db_conn.execute(
                 "INSERT INTO member (name) VALUES (?)", (name,)
@@ -481,7 +482,7 @@ def create_app(
             return weak
         row = await asyncio.to_thread(lambda: db_conn.execute(
             "SELECT i.member_id FROM instructor i JOIN member m ON m.id = i.member_id"
-            " WHERE m.name=?", (name,)
+            " WHERE m.name=? COLLATE NOCASE", (name,)
         ).fetchone())
         if row is None:
             return JSONResponse({"error": "not an instructor"}, status_code=404)
