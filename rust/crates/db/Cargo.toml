@@ -1,0 +1,10 @@
+[package]
+name = "boatsched-db"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+boatsched-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true

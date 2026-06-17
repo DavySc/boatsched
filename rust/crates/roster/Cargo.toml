@@ -1,0 +1,10 @@
+[package]
+name = "boatsched-roster"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+boatsched-core.workspace = true
+thiserror.workspace = true
+csv = "1"

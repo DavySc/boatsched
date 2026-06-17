@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/roster",
+    "crates/db",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+boatsched-core = { path = "crates/core" }
+boatsched-roster = { path = "crates/roster" }
+boatsched-db = { path = "crates/db" }
+thiserror = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }

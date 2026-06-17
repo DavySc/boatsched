@@ -368,7 +368,22 @@ max_ws_message_bytes=1024*1024, min_password_len=1
 
 ---
 
-## 10. OPEN QUESTIONS (answer before translation)
+## 10. OPEN QUESTIONS
+
+> **RESOLVED (maintainer, 2026-06-17):**
+> - **Q1 → (a)** Solver parity bar = match objective values + structural
+>   invariants (current tests). Exact assignments are free among optima.
+> - **Q2 → (i)** OR-Tools via an `extern "C"` C++ shim compiled with `cc`/CMake
+>   against the full OR-Tools C++ SDK (abseil + protobuf). Build documented.
+> - **Q3 → byte-compatible** scrypt (`n=16384, r=8, p=1`, 32-byte salt, 64-byte
+>   key); existing DBs/logins keep working.
+> - **Q6 → `rusqlite` + `spawn_blocking`** (mirrors `asyncio.to_thread`).
+> - **Q4, Q5 → reproduce as-is** (member-0 open-mode sentinel kept exactly;
+>   `/api/progress` stays absent/404) per parity priority #1.
+> - **Q7 → yes**, capture Python solver objective values + invariants as golden
+>   fixtures committed to the branch.
+
+### Original questions (for the record)
 
 **Q1 — Solver "identical results" definition (blocking).** CP-SAT with
 `workers=8` and time limits is nondeterministic: repeated runs of the *Python*
