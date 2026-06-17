@@ -4,7 +4,10 @@
 //! migrations. The member/season/schedule/instructor data helpers are added in
 //! stage (b).
 
+pub mod helpers;
 pub mod schema;
+
+pub use helpers::*;
 
 use rusqlite::Connection;
 
