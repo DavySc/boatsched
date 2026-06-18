@@ -25,7 +25,9 @@ impl Kid {
 }
 
 /// One output assignment row: `(day, boat, name, level)` with 1-based boat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serializes to `{"day","boat","name","level"}`, matching the JSON the Python
+/// `/schedule` and `/status` endpoints emit.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ScheduleRow {
     pub day: String,
     pub boat: i64,
@@ -36,7 +38,10 @@ pub struct ScheduleRow {
 /// Problem and solver configuration. Field defaults match the Python
 /// `Config` dataclass (stage_seconds=20.0, seconds=115.0); the CLI and server
 /// override stage_seconds/seconds at their own layer (45/60).
-#[derive(Debug, Clone, PartialEq)]
+/// Serializes to the same JSON shape as Python's `asdict(Config)` (keys
+/// `boats, levels, restricted, diverse, adj, stage_seconds, seconds, workers`),
+/// so the `schedule.config` TEXT column written by `save_schedule` matches.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Config {
     /// May be <= 0 so that [`validate`] can reject it (parity with Python).
     pub boats: i64,

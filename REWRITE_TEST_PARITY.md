@@ -17,6 +17,20 @@ Legend for "Rust strategy":
 
 ---
 
+> **Stage (d) status (HTTP routes).** All JSON/CSV routes are implemented in
+> `crates/server/src/lib.rs` and covered by 27 integration tests in
+> `crates/server/tests/api.rs` (open vs auth mode, 401/403/404/409/413/429,
+> the `error` vs `detail` bodies and Dutch strings, login/logout/me, members
+> CRUD + import + progression, boats, seasons, set-admin + self-revoke guard,
+> level validation, CSV export, password policy, session TTL, login throttle,
+> upload cap, and the full solve→status→schedule flow). The yrs-coupled
+> `POST /schedule/{id}/commit` and `WS /collab/{id}` are **deferred to stage
+> (f)** (marked `ws`/commit below). The Python route suites are deeper per
+> route; the Rust set covers each route + every distinct status/authz branch,
+> with more cases to be back-filled alongside stage (f).
+
+---
+
 ## tests/test_boatsched.py (7)
 - [ ] `test_roster_from_counts` → unit (roster)
 - [ ] `test_parse_bytes_requires_columns` → unit (roster, error)

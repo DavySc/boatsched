@@ -29,32 +29,32 @@ type Result<T> = std::result::Result<T, DbError>;
 // Row types (named structs replace the Python dict/tuple returns)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Member {
     pub id: i64,
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Season {
     pub id: i64,
     pub year: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ScheduleMeta {
     pub id: i64,
     pub created: Option<String>,
     pub start_date: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Boat {
     pub id: i64,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct InstructorRow {
     pub id: i64,
     pub name: String,
@@ -64,7 +64,7 @@ pub struct InstructorRow {
     pub has_password: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SeedResult {
     pub created: i64,
     pub existing: i64,

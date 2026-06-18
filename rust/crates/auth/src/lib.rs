@@ -313,6 +313,12 @@ impl Authenticator {
         bucket.push(now);
     }
 
+    /// Clear an IP's failure counter (a successful login resets it). Mirrors
+    /// `login_failures.pop(ip, None)`.
+    pub fn clear_login_failures(&self, ip: &str) {
+        self.login_failures.lock().unwrap().remove(ip);
+    }
+
     /// True when `ip` has hit the failure cap within the window. Also prunes,
     /// matching the Python implementation's behaviour.
     pub fn login_blocked(&self, ip: &str) -> bool {
