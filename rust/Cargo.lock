@@ -58,6 +58,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "boatsched-solver"
+version = "0.1.0"
+dependencies = [
+ "boatsched-core",
+ "boatsched-roster",
+ "cc",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"

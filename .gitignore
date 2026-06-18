@@ -41,3 +41,4 @@ frontend/dist/
 
 # Rust build artifacts
 rust/target/
+rust/vendor/

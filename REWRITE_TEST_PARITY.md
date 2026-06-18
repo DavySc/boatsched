@@ -21,26 +21,30 @@ Legend for "Rust strategy":
 - [ ] `test_roster_from_counts` → unit (roster)
 - [ ] `test_parse_bytes_requires_columns` → unit (roster, error)
 - [ ] `test_parse_bytes_ok` → unit (roster)
-- [ ] `test_validation_divisibility` → unit (solver validate, ValidationError)
-- [ ] `test_validation_unknown_level` → unit (solver validate, ValidationError)
-- [ ] `test_tiny_solve` → golden/integration (4 kids, 2 boats; 8 rows; per-day placement; stats keys)
+- [x] `test_validation_divisibility` → core unit + solver `indivisible_roster_is_validation_error`
+- [x] `test_validation_unknown_level` → core unit + solver `unknown_level_is_validation_error`
+- [x] `test_tiny_solve` → solver `tiny_solve` (8 rows; per-day placement; status_C)
 
 ## tests/test_solver.py (≈30)
-TestValidate (6):
-- [ ] `test_no_days_raises` / `test_boats_zero_raises` / `test_boats_negative_raises`
-- [ ] `test_indivisible_raises` / `test_unknown_level_raises` / `test_valid_passes_no_exception`
-TestConfigDays (4):
-- [ ] `test_restricted_before_diverse` / `test_only_restricted` / `test_only_diverse` / `test_empty_both`
-TestSolveInvariants (10):
-- [ ] row_count / every_kid_placed_each_day / uniform_boat_capacity / boat_numbers_in_range
-- [ ] days_in_output_match_config / names_in_output_match_input / levels_in_output_match_input
-- [ ] stats_keys_present / stats_are_nonneg_ints / status_C_is_str (∈ OPTIMAL|FEASIBLE)
-TestOnProgress (4):
-- [ ] called_three_times (labels exactly "A mixed","B diversity","C repeats")
-- [ ] values_are_ints / values_are_nonneg / statuses_are_strings
-TestSolveConstraints (5):
-- [ ] single_level_never_mixed (mixed==0) / adj0_homogeneous_restricted_boats
-- [ ] adj1_blocks_nonadjacent_levels / single_day_zero_repeats / repeats_bounded_by_days
+TestValidate (6): → `crates/core/src/lib.rs` units (validate)
+- [x] `test_no_days_raises` / `test_boats_zero_raises` / `test_boats_negative_raises`
+- [x] `test_indivisible_raises` / `test_unknown_level_raises` / `test_valid_passes_no_exception`
+TestConfigDays (4): → `crates/core/src/lib.rs` units (Config::days)
+- [x] `test_restricted_before_diverse` / `test_only_restricted` / `test_only_diverse` / `test_empty_both`
+TestSolveInvariants (10): → `crates/solver/tests/solver_parity.rs`
+- [x] row_count / every_kid_placed_each_day / uniform_boat_capacity / boat_numbers_in_range
+- [x] days_in_output_match_config / names_in_output_match_input / levels_in_output_match_input
+- [x] stats fields are present by struct construction / stats_are_nonneg / status_c_is_optimal_or_feasible
+TestOnProgress (4): → `crates/solver/tests/solver_parity.rs`
+- [x] on_progress_called_three_times_with_labels (exactly "A mixed","B diversity","C repeats")
+- [x] values are i64 by signature / on_progress_values_nonneg / on_progress_statuses_are_known
+TestSolveConstraints (5): → `crates/solver/tests/solver_parity.rs`
+- [x] single_level_never_mixed (mixed==0) / adj0_homogeneous_restricted_boats
+- [x] adj1_blocks_nonadjacent_levels / single_day_zero_repeats / repeats_bounded_by_days
+
+**ADDED beyond Python:** `golden_tiny_objectives_match_python`,
+`golden_mid_16_objectives_match_python` — pin exact OPTIMAL objective triples
+captured from the Python solver (`rust/bench/py_bench.py`).
 
 ## tests/test_roster.py (≈20)
 - [ ] TestParseRosterBytes: bom_stripped, case_insensitive_headers, whitespace_stripped,
