@@ -131,14 +131,17 @@ TestMain (≈11):
 - [ ] TestPasswordHashing (4): not_plaintext (len 64 hash, 32 salt), wrong_none,
       correct_returns_mid, two_same_pw_diff_hashes
 
-## tests/test_collab.py (≈12) — ws / yrs
-- [ ] TestWebSocketSync (4): server_sends_step1_on_connect, client_step1_gets_step2,
-      step2_populates_doc (keys "{day}:{boat}"), correct_member_count (8)
-- [ ] TestTwoClientConvergence (3): both_see_same_initial, update_reaches_other (broadcast SYNC_UPDATE),
-      update_persisted_to_db
-- [ ] TestCommitEndpoint (5): no_db_503, valid_returns_ok, updates_assignments,
-      detects_conflict ({name,day,boats}), late_join_sees_current_state
-- [ ] (also covers the varint/framing helpers `_parse_message`, `_encode_*`)
+## tests/test_collab.py (≈12) — ws / yrs → `crates/server/{src/collab.rs,tests/collab.rs}`
+- [x] TestWebSocketSync: server_sends_step1_on_connect, step1_gets_step2_and_populates_doc
+      (keys "{day}:{boat}"), member_count==8 (real server + tokio-tungstenite + yrs client)
+- [x] TestTwoClientConvergence: update_from_one_client_reaches_other (broadcast SYNC_UPDATE),
+      update_persisted_and_late_join_sees_it (covers persist + late-join reload from DB)
+- [x] TestCommitEndpoint: commit_no_db_503, commit_valid_returns_ok_and_preserves_rows,
+      commit_detects_conflict ({name,day,boats})
+- [x] varint/framing helpers (`parse_message`, `encode_*`, varint round-trip + known encoding)
+      as `collab` unit tests
+- [x] **ADDED:** `pycrdt_update_decodes_in_yrs` — a captured pycrdt v1 update applied by
+      yrs, pinning cross-implementation (Python↔Rust) wire compatibility.
 
 ## tests/test_level_editing.py (≈14) — http
 - [ ] TestBoatAssignmentAuthz (5): admin_unlocked_ok, non_admin_unlocked_403,

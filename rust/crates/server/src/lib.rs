@@ -15,11 +15,14 @@
 //! - DB work runs on `spawn_blocking` over a single `Arc<Mutex<Connection>>`,
 //!   mirroring the Python single-connection + `asyncio.to_thread` model.
 
+pub mod collab;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -96,6 +99,7 @@ pub struct AppState {
     db: Option<Arc<Mutex<Connection>>>,
     auth: Arc<Authenticator>,
     jobs: Mutex<HashMap<String, Job>>,
+    collab: collab::CollabState,
     opts: ServerOptions,
 }
 
@@ -120,6 +124,7 @@ pub fn create_app(cfg: Config, db_conn: Option<Connection>, opts: ServerOptions)
         db: db_conn.map(|c| Arc::new(Mutex::new(c))),
         auth: Arc::new(auth),
         jobs: Mutex::new(HashMap::new()),
+        collab: collab::CollabState::new(),
         opts,
     });
 
@@ -138,6 +143,8 @@ pub fn create_app(cfg: Config, db_conn: Option<Connection>, opts: ServerOptions)
         .route("/solve", post(solve_endpoint))
         .route("/status", get(get_status))
         .route("/schedule/:id/start-date", post(set_start_date))
+        .route("/schedule/:id/commit", post(commit_schedule))
+        .route("/collab/:id", get(collab_ws))
         .route("/swap", post(swap_endpoint))
         .route("/api/auth/login", post(api_login))
         .route("/api/auth/logout", post(api_logout))
@@ -289,7 +296,9 @@ const PUBLIC_PATHS: [&str; 5] = [
 
 async fn auth_middleware(State(state): State<SharedState>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
-    if !PUBLIC_PATHS.contains(&path.as_str()) {
+    // WebSocket upgrades aren't gated here (Python's HTTP middleware doesn't run
+    // for the WS scope); /collab does its own auth with close codes.
+    if !PUBLIC_PATHS.contains(&path.as_str()) && !path.starts_with("/collab/") {
         let token = bsession(req.headers());
         if auth_member(&state, token).await.is_none() {
             return e_error(StatusCode::UNAUTHORIZED, "not authenticated");
@@ -722,10 +731,14 @@ async fn run_job(
             ) {
                 let cfg_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".into());
                 let rows_c = rows.clone();
+                // Initialise the Yjs doc from the result and persist it as
+                // yjs_state, exactly like Python's _run_job.
+                let yjs = collab::init_doc_update_from_rows(&rows);
                 let saved = with_db(&state, move |conn| {
-                    db::save_schedule(conn.unwrap(), sid, &cfg_json, &rows_c)
-                    // NOTE: yjs_state initialisation is deferred to stage (f),
-                    // where the yrs CRDT layer lands.
+                    let conn = conn.unwrap();
+                    let id = db::save_schedule(conn, sid, &cfg_json, &rows_c)?;
+                    db::set_yjs_state(conn, id, &yjs)?;
+                    Ok::<i64, db::DbError>(id)
                 })
                 .await;
                 match saved {
@@ -877,6 +890,176 @@ async fn swap_endpoint(
         Ok(()) => ok_true(),
         Err(e) => server_error("swap", e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Yjs commit + collab websocket
+// ---------------------------------------------------------------------------
+
+async fn commit_schedule(
+    State(state): State<SharedState>,
+    Path(schedule_id): Path<i64>,
+    headers: HeaderMap,
+) -> Response {
+    if state.db.is_none() {
+        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
+    }
+    // Admin-only at all times (admins are not blocked by the start-date lock).
+    let _admin = match require_admin(&state, bsession(&headers)).await {
+        Ok(c) => c,
+        Err(_) => return e_detail(StatusCode::FORBIDDEN, "Only admins may edit boat assignments"),
+    };
+
+    // Prefer the live in-memory doc (a session may be mid-edit); otherwise load
+    // the persisted yjs_state. The doc is fully consumed before the next await.
+    let outcome = {
+        let doc = match state.collab.peek_doc(schedule_id) {
+            Some(d) => d,
+            None => {
+                let st = with_db(&state, move |conn| {
+                    db::get_yjs_state(conn.unwrap(), schedule_id).unwrap_or(None)
+                })
+                .await;
+                let doc = yrs::Doc::new();
+                {
+                    use yrs::Transact;
+                    let _ = doc.get_or_insert_map("schedule");
+                    let _ = &doc.transact(); // ensure the map is registered
+                }
+                if let Some(bytes) = st {
+                    collab::apply_update(&doc, &bytes);
+                }
+                doc
+            }
+        };
+        collab::read_assignments(&doc)
+    };
+
+    match outcome {
+        Err(conflicts) => {
+            let arr: Vec<Value> = conflicts
+                .into_iter()
+                .map(|c| json!({ "name": c.name, "day": c.day, "boats": c.boats }))
+                .collect();
+            Json(json!({ "ok": false, "conflicts": arr })).into_response()
+        }
+        Ok(assignments) => {
+            match with_db(&state, move |conn| {
+                db::replace_assignments(conn.unwrap(), schedule_id, &assignments)
+            })
+            .await
+            {
+                Ok(()) => ok_true(),
+                Err(e) => server_error("commit", e),
+            }
+        }
+    }
+}
+
+async fn collab_ws(
+    State(state): State<SharedState>,
+    Path(schedule_id): Path<i64>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // The HTTP auth middleware is skipped for /collab; do the checks here. We
+    // deny the handshake (HTTP error) rather than accepting then closing — the
+    // connection is refused either way (documented divergence from the Python
+    // post-accept ws.close(1011/1008)).
+    if state.db.is_none() {
+        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
+    }
+    let token = bsession(&headers);
+    if auth_member(&state, token.clone()).await.is_none() {
+        return e_error(StatusCode::UNAUTHORIZED, "not authenticated");
+    }
+    // Admins edit; everyone else observes (their update frames are dropped).
+    let is_admin = current_is_admin(&state, token).await;
+    ws.on_upgrade(move |socket| handle_collab(state, schedule_id, is_admin, socket))
+}
+
+async fn handle_collab(
+    state: SharedState,
+    schedule_id: i64,
+    is_admin: bool,
+    mut socket: WebSocket,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+
+    // Lazily load persisted state, then join the room.
+    let initial = with_db(&state, move |conn| {
+        conn.and_then(|c| db::get_yjs_state(c, schedule_id).unwrap_or(None))
+    })
+    .await;
+    let joined = state.collab.join(schedule_id, initial.as_deref());
+    let conn_id = joined.conn_id;
+    let doc = joined.doc;
+    let tx = joined.tx;
+    let mut rx = joined.rx;
+
+    // Sync step 1: tell the client our state vector so they can catch up.
+    let sv = collab::state_vector(&doc);
+    let _ = socket.send(Message::Binary(collab::encode_sync_step1(&sv))).await;
+
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Binary(raw))) => {
+                        // Drop oversized frames before parsing/applying.
+                        if raw.len() > state.opts.max_ws_message_bytes {
+                            continue;
+                        }
+                        let Some((mtype, stype, payload)) = collab::parse_message(&raw) else {
+                            continue;
+                        };
+                        if mtype == collab::MSG_SYNC {
+                            if stype == collab::SYNC_STEP1 {
+                                let diff = collab::diff_for(&doc, &payload);
+                                let _ = socket
+                                    .send(Message::Binary(collab::encode_sync_step2(&diff)))
+                                    .await;
+                            } else if stype == collab::SYNC_STEP2 || stype == collab::SYNC_UPDATE {
+                                // Apply/persist/broadcast only for admins; a
+                                // non-admin (Observer) frame is silently dropped.
+                                if is_admin && collab::apply_update(&doc, &payload) {
+                                    let state_bytes = collab::full_update(&doc);
+                                    let _ = with_db(&state, move |conn| {
+                                        if let Some(c) = conn {
+                                            let _ = db::set_yjs_state(c, schedule_id, &state_bytes);
+                                        }
+                                    })
+                                    .await;
+                                    let _ = tx.send((conn_id, collab::encode_update_msg(&payload)));
+                                }
+                            }
+                        } else if mtype == collab::MSG_AWARENESS {
+                            let _ = tx.send((conn_id, raw));
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {} // text/ping/pong — ignore
+                    Some(Err(_)) => break,
+                }
+            }
+            received = rx.recv() => {
+                match received {
+                    Ok((from, data)) => {
+                        if from != conn_id
+                            && socket.send(Message::Binary(data)).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => {} // dropped some broadcasts; keep going
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+
+    drop(rx);
+    state.collab.leave_if_empty(schedule_id);
 }
 
 // ---------------------------------------------------------------------------

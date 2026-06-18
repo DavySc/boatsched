@@ -13,11 +13,15 @@ boatsched-solver.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "signal"] }
 uuid = { version = "1", features = ["v4"] }
+yrs = "0.21"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 boatsched-roster.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+yrs = "0.21"

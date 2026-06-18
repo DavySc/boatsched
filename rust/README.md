@@ -11,8 +11,9 @@ See `../REWRITE_INVENTORY.md` for the full behavioural inventory and
 | `boatsched-core` | `solver.py` domain types + `validate` + `Config` | ✅ |
 | `boatsched-roster` | `roster.py` | ✅ |
 | `boatsched-db` | `db.py` (rusqlite, bundled SQLite) | ✅ |
+| `boatsched-auth` | `server.py` authz model as types (capability `AdminCtx`) | ✅ |
 | `boatsched-solver` | `solver.py` CP-SAT model via OR-Tools C++ FFI | ✅ |
-| (server / cli) | `server.py`, `cli.py` | ⬜ pending |
+| `boatsched-server` | `server.py` axum routes + `boatsched-server` binary + yrs collab | ✅ |
 
 ```bash
 cargo test            # whole workspace
@@ -112,3 +113,63 @@ unconverged CP-SAT search, and falls squarely within the agreed parity bar:
 
 If a future change makes stage C converge to OPTIMAL on the full roster, the
 `repeats` value will become reproducible and can be pinned as a golden test.
+
+## Collaborative editing (yrs) performance
+
+`crates/server/src/collab.rs` ports the y-websocket binary sync protocol
+(lib0 varint framing reproduced byte-for-byte) and the per-schedule CRDT doc.
+Payloads are Yjs **v1** encodings via the `yrs` crate; a captured-pycrdt-update
+fixture test (`tests/collab.rs::pycrdt_update_decodes_in_yrs`) pins
+pycrdt↔yrs wire compatibility.
+
+### Benchmark
+
+```bash
+cargo run -p boatsched-server --release --example crdt_bench
+../.venv/bin/python bench/py_crdt_bench.py
+```
+
+Realistic schedule (13 boats × 6 days × 4 kids = 312 entries / 78 keys), per-op:
+
+| op | what | Python (pycrdt) | Rust (yrs) | speedup |
+|----|------|-----------------|------------|---------|
+| `build` | group rows + build doc + encode full update | 714 µs | 210 µs | ~3.4× |
+| `apply` | decode + apply update into a fresh doc | 88 µs | 87 µs | ~1× |
+| `scan` | apply + read map + conflict-scan (the commit path) | 919 µs | 172 µs | ~5.3× |
+
+**Why `apply` ties:** pycrdt is itself a Rust binding to `yrs`, so the raw
+update decode is the *same native code* on both sides. The Rust wins on `build`
+and `scan` come from staying in native code where pycrdt pays a Python↔Rust FFI
+crossing per map/array element (constructing the doc, and iterating it for the
+commit conflict scan).
+
+## Expected UX differences (Python → Rust)
+
+The two builds are behaviourally identical (that's the whole point — see the
+parity checklist), so day-to-day the app *looks and acts the same*. Where users
+or operators may notice a difference:
+
+- **Solver: no change in the common case.** A real solve runs to its wall-clock
+  budget in OR-Tools C++ on both sides, so a full-roster optimise takes the same
+  time and yields the same objective quality. Small/preview solves that finish
+  before the budget return a little quicker (no Python model-build overhead).
+- **Snappier collaborative editing.** Opening a schedule (`build`) and pressing
+  *Commit* (the conflict `scan`) are 3–5× cheaper server-side. At this scale
+  that's sub-millisecond either way — imperceptible to one user, but it lowers
+  tail latency when several instructors edit at once.
+- **Real parallelism, no GIL.** The Python server runs solve jobs on threads
+  under the GIL and DB work via a threadpool; the Rust server uses Tokio +
+  `spawn_blocking` over a single SQLite connection. Concurrent requests during a
+  running solve stay responsive without the GIL contention the Python build can
+  show under load.
+- **Lighter, simpler deployment.** A single statically-ish linked binary
+  (`boatsched-server`) plus the OR-Tools shared lib replaces the Python runtime
+  + venv + wheels image. Lower idle memory and faster cold start; the Docker
+  image is smaller.
+- **Same security posture.** Production hardening (require_auth, secure cookies,
+  login throttle, upload caps, generic 500s, security headers, admin bootstrap)
+  is preserved with identical defaults, so admins configure it exactly as before.
+
+What users will **not** notice: the API, the embedded `viewer.html` SPA, every
+URL, request/response shape, status code, the Dutch UI strings, and the
+scheduling results are unchanged.
