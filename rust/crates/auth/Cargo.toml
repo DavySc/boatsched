@@ -1,0 +1,12 @@
+[package]
+name = "boatsched-auth"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+boatsched-core.workspace = true
+boatsched-db.workspace = true
+rusqlite.workspace = true
+# Cryptographically-random session tokens (mirrors secrets.token_urlsafe(32)).
+rand = "0.8"

@@ -98,6 +98,12 @@ TestMain (≈11):
 - [ ] TestReplaceAssignments (2): replaces_all_rows, unknown_member_raises
 
 ## tests/test_auth.py (≈40)
+> **Stage (c) note:** the authz *logic* behind these route tests — open-mode
+> determination, session resolution + TTL eviction, admin classification, the
+> `AdminCtx` capability, collab Observer/Editor split, self-revoke guard, login
+> throttle, URL-safe token shape — is now unit-tested in
+> `crates/auth/src/lib.rs` (11 tests). The HTTP-level assertions below are wired
+> in stage (d) once the axum routes exist.
 - [ ] TestOpenMode (7): root_no_login, api_no_login, config_open, login_accepts_any,
       set_password_open, set_password_non_instructor_404
 - [ ] TestAuthMode (12): root_returns_viewer, api_401, config_401, valid_login_sets_cookie,

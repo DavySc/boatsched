@@ -5,6 +5,7 @@ members = [
     "crates/roster",
     "crates/db",
     "crates/solver",
+    "crates/auth",
 ]
 
 [workspace.package]
@@ -16,5 +17,6 @@ license = "MIT"
 boatsched-core = { path = "crates/core" }
 boatsched-roster = { path = "crates/roster" }
 boatsched-db = { path = "crates/db" }
+boatsched-auth = { path = "crates/auth" }
 thiserror = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }

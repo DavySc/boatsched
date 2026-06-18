@@ -30,6 +30,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "boatsched-auth"
+version = "0.1.0"
+dependencies = [
+ "boatsched-core",
+ "boatsched-db",
+ "rand",
+ "rusqlite",
+]
+
+[[package]]
 name = "boatsched-core"
 version = "0.1.0"
 dependencies = [
