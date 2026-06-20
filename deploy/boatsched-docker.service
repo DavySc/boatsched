@@ -1,0 +1,39 @@
+[Unit]
+Description=boatsched (Rust/axum + OR-Tools CP-SAT + yrs collab) — Docker
+# The container talks to the network and needs the Docker daemon up first.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+# Run under the deploy user (must be in the `docker` group). WorkingDirectory
+# holds docker-compose.yml so the relative build context / file resolve.
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/boatsched
+
+# --- SINGLE PROCESS / SINGLE CONTAINER -------------------------------------
+# All server-side state (sessions, solve JOBS, per-schedule yrs docs + live
+# WebSockets) lives in the one container's memory and cannot be shared across
+# replicas — exactly as in the Python deployment. Do NOT scale this service.
+#
+# The DB is bind-mounted from /var/lib/boatsched (see docker-compose.yml), so the
+# live SQLite WAL DB is reused unchanged. SOLVER_WORKERS and the admin bootstrap
+# come from /etc/boatsched/env via compose `env_file`.
+
+# `up` (not `up -d`) so systemd supervises the foreground compose process and
+# Restart=on-failure works. `--remove-orphans` keeps the stack clean on file
+# changes. Pull is done by deploy.sh, not here, to keep restarts fast/offline.
+ExecStartPre=-/usr/bin/docker compose -f /opt/boatsched/docker-compose.yml down --remove-orphans
+ExecStart=/usr/bin/docker compose -f /opt/boatsched/docker-compose.yml up --remove-orphans
+ExecStop=/usr/bin/docker compose -f /opt/boatsched/docker-compose.yml down
+
+Restart=on-failure
+RestartSec=5
+# Give the image time to start/stop cleanly.
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

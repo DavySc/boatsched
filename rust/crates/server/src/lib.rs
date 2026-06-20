@@ -152,7 +152,10 @@ pub fn create_app(cfg: Config, db_conn: Option<Connection>, opts: ServerOptions)
         .route("/api/members", get(list_members_api))
         .route("/api/members/progression", get(members_progression))
         .route("/api/members/import", post(import_members_api))
-        .route("/api/members/:id", put(rename_member_api).delete(delete_member_api))
+        .route(
+            "/api/members/:id",
+            put(rename_member_api).delete(delete_member_api),
+        )
         .route("/api/instructors/:id/set-admin", post(set_instructor_admin))
         .route(
             "/enrollment/:eid/member/:mid/level",
@@ -226,7 +229,10 @@ async fn current_is_admin(state: &SharedState, token: Option<String>) -> bool {
 /// had. Admin-only handlers call this and gate the DB mutation on `Ok`.
 async fn require_admin(state: &SharedState, token: Option<String>) -> Result<AdminCtx, AuthError> {
     let auth = state.auth.clone();
-    with_db(state, move |conn| auth.require_admin(token.as_deref(), conn)).await
+    with_db(state, move |conn| {
+        auth.require_admin(token.as_deref(), conn)
+    })
+    .await
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -410,9 +416,11 @@ async fn create_instructor(
             return Ok::<Option<i64>, rusqlite::Error>(None);
         }
         let no_admins: Option<i64> = conn
-            .query_row("SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .optional()?;
         conn.execute(
             "INSERT INTO instructor (member_id, is_admin) VALUES (?, ?)",
@@ -719,8 +727,7 @@ async fn run_job(
     season_id: Option<String>,
 ) {
     let cfg_solve = cfg.clone();
-    let solved =
-        tokio::task::spawn_blocking(move || solve(&kids, &cfg_solve, None)).await;
+    let solved = tokio::task::spawn_blocking(move || solve(&kids, &cfg_solve, None)).await;
 
     match solved {
         Ok(Ok((rows, stats))) => {
@@ -868,7 +875,12 @@ async fn swap_endpoint(
     // capability before doing the mutation.
     let _admin = match require_admin(&state, bsession(&headers)).await {
         Ok(c) => c,
-        Err(_) => return e_detail(StatusCode::FORBIDDEN, "Only admins may edit boat assignments"),
+        Err(_) => {
+            return e_detail(
+                StatusCode::FORBIDDEN,
+                "Only admins may edit boat assignments",
+            )
+        }
     };
     let v = match parse_json(&body) {
         Ok(v) => v,
@@ -907,7 +919,12 @@ async fn commit_schedule(
     // Admin-only at all times (admins are not blocked by the start-date lock).
     let _admin = match require_admin(&state, bsession(&headers)).await {
         Ok(c) => c,
-        Err(_) => return e_detail(StatusCode::FORBIDDEN, "Only admins may edit boat assignments"),
+        Err(_) => {
+            return e_detail(
+                StatusCode::FORBIDDEN,
+                "Only admins may edit boat assignments",
+            )
+        }
     };
 
     // Prefer the live in-memory doc (a session may be mid-edit); otherwise load
@@ -999,7 +1016,9 @@ async fn handle_collab(
 
     // Sync step 1: tell the client our state vector so they can catch up.
     let sv = collab::state_vector(&doc);
-    let _ = socket.send(Message::Binary(collab::encode_sync_step1(&sv))).await;
+    let _ = socket
+        .send(Message::Binary(collab::encode_sync_step1(&sv)))
+        .await;
 
     loop {
         tokio::select! {
@@ -1084,13 +1103,21 @@ async fn api_login(State(state): State<SharedState>, headers: HeaderMap, body: B
         .unwrap_or("")
         .trim()
         .to_string();
-    let password = v.get("password").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let password = v
+        .get("password")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let auth = state.auth.clone();
     let open = with_db(&state, move |conn| auth.is_open(conn)).await;
     if state.db.is_none() || open {
         let token = state.auth.new_session(boatsched_auth::OPEN_MODE_MEMBER);
-        let label = if name.is_empty() { "instructor".to_string() } else { name };
+        let label = if name.is_empty() {
+            "instructor".to_string()
+        } else {
+            name
+        };
         let mut resp = Json(json!({ "ok": true, "name": label })).into_response();
         set_session_cookie(&mut resp, &token, &state.opts);
         return resp;
@@ -1201,15 +1228,18 @@ async fn members_progression(State(state): State<SharedState>) -> Response {
         let mut estmt = conn.prepare("SELECT member_id, season_id, level FROM enrollment")?;
         let mut by_member: HashMap<i64, HashMap<i64, String>> = HashMap::new();
         let rows = estmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         for row in rows {
             let (mid, sid, lvl) = row?;
             by_member.entry(mid).or_default().insert(sid, lvl);
         }
 
-        let mut mstmt =
-            conn.prepare("SELECT id, name FROM member WHERE active=1 ORDER BY name")?;
+        let mut mstmt = conn.prepare("SELECT id, name FROM member WHERE active=1 ORDER BY name")?;
         let members: Vec<Value> = mstmt
             .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?
@@ -1260,7 +1290,11 @@ async fn rename_member_api(
     if name.is_empty() {
         return e_error(StatusCode::BAD_REQUEST, "name must not be empty");
     }
-    match with_db(&state, move |conn| db::rename_member(conn.unwrap(), member_id, &name)).await {
+    match with_db(&state, move |conn| {
+        db::rename_member(conn.unwrap(), member_id, &name)
+    })
+    .await
+    {
         Ok(()) => ok_true(),
         Err(db::DbError::Value(msg)) => e_error(StatusCode::CONFLICT, msg),
         Err(e) => server_error("rename_member", e),
@@ -1278,7 +1312,11 @@ async fn delete_member_api(
     if !current_is_admin(&state, bsession(&headers)).await {
         return e_error(StatusCode::FORBIDDEN, "admin required");
     }
-    match with_db(&state, move |conn| db::delete_member(conn.unwrap(), member_id)).await {
+    match with_db(&state, move |conn| {
+        db::delete_member(conn.unwrap(), member_id)
+    })
+    .await
+    {
         Ok(()) => ok_true(),
         Err(db::DbError::Value(msg)) => e_error(StatusCode::CONFLICT, msg),
         Err(e) => server_error("delete_member", e),
@@ -1370,7 +1408,11 @@ async fn set_instructor_admin(
     if !exists {
         return e_error(StatusCode::NOT_FOUND, "not an instructor");
     }
-    match with_db(&state, move |conn| db::set_admin(conn.unwrap(), member_id, is_admin)).await {
+    match with_db(&state, move |conn| {
+        db::set_admin(conn.unwrap(), member_id, is_admin)
+    })
+    .await
+    {
         Ok(()) => ok_true(),
         Err(e) => server_error("set_admin", e),
     }
@@ -1419,7 +1461,10 @@ async fn set_student_level(
     .await;
     match updated {
         Ok(true) => Json(json!({ "ok": true, "level": level })).into_response(),
-        Ok(false) => e_detail(StatusCode::NOT_FOUND, "student not found in this enrollment"),
+        Ok(false) => e_detail(
+            StatusCode::NOT_FOUND,
+            "student not found in this enrollment",
+        ),
         Err(e) => server_error("set_student_level", e),
     }
 }
@@ -1525,7 +1570,10 @@ fn parse_names_csv(text: &str) -> Vec<String> {
         return Vec::new();
     }
     // Header with a "name" column?
-    let header: Vec<String> = lines[0].split(',').map(|c| c.trim().to_lowercase()).collect();
+    let header: Vec<String> = lines[0]
+        .split(',')
+        .map(|c| c.trim().to_lowercase())
+        .collect();
     if let Some(col) = header.iter().position(|c| c == "name") {
         return lines[1..]
             .iter()
@@ -1540,7 +1588,15 @@ fn parse_names_csv(text: &str) -> Vec<String> {
     // No 'name' header: first token of each line.
     lines
         .iter()
-        .map(|line| line.trim().split(',').next().unwrap_or("").trim().trim_matches('"').to_string())
+        .map(|line| {
+            line.trim()
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        })
         .filter(|name| !name.is_empty() && !matches!(name.to_lowercase().as_str(), "name" | "naam"))
         .collect()
 }

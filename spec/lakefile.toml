@@ -15,7 +15,8 @@ rev = "v4.31.0"
 [[lean_lib]]
 name = "BoatschedSpec"
 
-# `lake exe gen-vectors > conformance_vectors.json` regenerates the Rust bridge.
+# Regenerate the Rust bridge with:
+#   lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.json
 [[lean_exe]]
 name = "gen-vectors"
 root = "GenVectors"

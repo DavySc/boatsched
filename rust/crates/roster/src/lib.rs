@@ -29,10 +29,7 @@ fn read_records(text: &str) -> Result<Vec<Kid>, RosterError> {
         .flexible(true)
         .from_reader(text.as_bytes());
 
-    let headers = reader
-        .headers()
-        .map_err(|_| err("empty CSV"))?
-        .clone();
+    let headers = reader.headers().map_err(|_| err("empty CSV"))?.clone();
     if headers.is_empty() {
         return Err(err("empty CSV"));
     }

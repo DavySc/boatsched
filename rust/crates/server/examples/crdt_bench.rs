@@ -61,7 +61,8 @@ fn main() {
         let doc = Doc::new();
         doc.get_or_insert_map("schedule");
         let mut txn = doc.transact_mut();
-        txn.apply_update(Update::decode_v1(&update).unwrap()).unwrap();
+        txn.apply_update(Update::decode_v1(&update).unwrap())
+            .unwrap();
     });
 
     time_op("scan", ITERS, || {

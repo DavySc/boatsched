@@ -107,10 +107,15 @@ pub fn solve(
 
     let restricted: std::collections::HashSet<&str> =
         cfg.restricted.iter().map(String::as_str).collect();
-    let diverse: std::collections::HashSet<&str> =
-        cfg.diverse.iter().map(String::as_str).collect();
-    let day_restricted: Vec<i32> = days.iter().map(|d| restricted.contains(d.as_str()) as i32).collect();
-    let day_diverse: Vec<i32> = days.iter().map(|d| diverse.contains(d.as_str()) as i32).collect();
+    let diverse: std::collections::HashSet<&str> = cfg.diverse.iter().map(String::as_str).collect();
+    let day_restricted: Vec<i32> = days
+        .iter()
+        .map(|d| restricted.contains(d.as_str()) as i32)
+        .collect();
+    let day_diverse: Vec<i32> = days
+        .iter()
+        .map(|d| diverse.contains(d.as_str()) as i32)
+        .collect();
 
     let mut assign = vec![-1i32; n * d];
     let mut status = [-1i32; 3];

@@ -270,11 +270,7 @@ impl Authenticator {
     /// everyone else (any authenticated non-admin, or open-mode) becomes
     /// [`CollabRole::Observer`]. Returns `None` only when the participant is not
     /// authenticated at all (cannot even open the socket).
-    pub fn collab_role(
-        &self,
-        token: Option<&str>,
-        db: Option<&Connection>,
-    ) -> Option<CollabRole> {
+    pub fn collab_role(&self, token: Option<&str>, db: Option<&Connection>) -> Option<CollabRole> {
         let mid = self.auth_member(token, db)?;
         match self.admin_for(mid, db) {
             Ok(ctx) => Some(CollabRole::Editor(ctx)),
@@ -343,8 +339,7 @@ fn generate_token() -> String {
 /// URL-safe base64 (RFC 4648 §5) without padding. Small local impl to avoid a
 /// base64 crate dependency for this single use.
 fn base64_urlsafe_nopad(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity((input.len() * 4 + 2) / 3);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -393,7 +388,11 @@ mod tests {
         conn.execute("INSERT INTO member (name) VALUES (?)", [name])
             .unwrap();
         let mid = conn.last_insert_rowid();
-        let pw: Option<Vec<u8>> = if with_password { Some(vec![1, 2, 3]) } else { None };
+        let pw: Option<Vec<u8>> = if with_password {
+            Some(vec![1, 2, 3])
+        } else {
+            None
+        };
         conn.execute(
             "INSERT INTO instructor (member_id, password_hash, is_admin) VALUES (?, ?, ?)",
             rusqlite::params![mid, pw, is_admin as i64],
@@ -431,7 +430,10 @@ mod tests {
         });
         assert!(!a.is_open(None));
         assert_eq!(a.auth_member(None, None), None);
-        assert_eq!(a.require_admin(None, None), Err(AuthError::NotAuthenticated));
+        assert_eq!(
+            a.require_admin(None, None),
+            Err(AuthError::NotAuthenticated)
+        );
     }
 
     // ---- auth mode -----------------------------------------------------------
@@ -549,7 +551,7 @@ mod tests {
         assert!(!a.login_blocked(ip)); // 2 < 3
         a.record_login_failure(ip);
         assert!(a.login_blocked(ip)); // 3 >= 3
-        // A different IP is unaffected.
+                                      // A different IP is unaffected.
         assert!(!a.login_blocked("5.6.7.8"));
     }
 

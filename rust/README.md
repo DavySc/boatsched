@@ -20,6 +20,54 @@ cargo test            # whole workspace
 cargo test -p boatsched-solver   # solver parity tests (needs the OR-Tools SDK)
 ```
 
+## Running locally
+
+> **Prerequisite:** the OR-Tools C++ SDK must be present (see the next section).
+> Everything that links the solver — including the server binary and most tests —
+> needs it. The build script auto-discovers it under `rust/vendor/`.
+
+All commands run from `rust/`.
+
+```bash
+# Run the test suite (whole workspace)
+cargo test
+
+# Just the Lean↔Rust conformance bridge (no SDK needed)
+cargo test -p boatsched-core --test conformance
+```
+
+### Start the server
+
+```bash
+# Dev mode — no DB → "open mode": no auth, everyone is treated as admin.
+# Good for clicking around the embedded viewer.html SPA.
+cargo run -p boatsched-server
+
+# With a database → production hardening switches on automatically
+# (require_auth, secure cookies, min_password_len=8, login throttle).
+# Seed the bootstrap admin via env vars, or nobody can log in.
+BOATSCHED_ADMIN=davy BOATSCHED_ADMIN_PW='a-long-password' \
+  cargo run -p boatsched-server -- --db boatsched.db --port 8000
+
+# Real performance (the solver is much faster optimized):
+BOATSCHED_ADMIN=davy BOATSCHED_ADMIN_PW='a-long-password' \
+  cargo run -p boatsched-server --release -- --db boatsched.db
+```
+
+Then open <http://localhost:8000> — it serves the same `viewer.html` SPA as the
+Python build. Flags mirror `server.py`: `--port`, `--host`, `--db`, `--boats`,
+`--adj`, `--seconds`, `--stage-seconds`, `--workers`, and the space-separated
+lists `--levels` / `--restricted` / `--diverse`.
+
+**Notes**
+- **First build is slow** — it compiles the C++ shim and links OR-Tools
+  (~56 MB lib); later builds are incremental.
+- Without `--db` the server is unauthenticated (dev). With `--db` and no admin
+  seeded you'll get a warning that nobody can log in — set
+  `BOATSCHED_ADMIN` / `BOATSCHED_ADMIN_PW`.
+- There is no standalone `boatsched` solver CLI yet; to drive a solve without the
+  server, use `cargo run -p boatsched-solver --release --example bench`.
+
 ## OR-Tools SDK (required by `boatsched-solver`)
 
 The solver crate compiles a thin C++ shim (`crates/solver/cpp/cpsat_shim.cpp`)
@@ -80,12 +128,12 @@ cargo run -p boatsched-solver --release --example bench -- ../examples/roster_52
 
 Representative run (8 workers, same machine):
 
-| case | mixed | distinct | repeats (py / rs) | status_C | Python | Rust |
-|------|-------|----------|-------------------|----------|--------|------|
-| `tiny_2k2b`     | 0 | 4  | 0 / 0   | OPTIMAL  | 0.050 s | 0.013 s |
-| `adj0_4k4b`     | 0 | 0  | 0 / 0   | OPTIMAL  | 0.009 s | 0.008 s |
-| `mid_16_4lvl`   | 0 | 32 | 72 / 72 | OPTIMAL  | 0.211 s | 0.189 s |
-| `full_roster52` | 0 | 98 | 50 / 48 | FEASIBLE | 72.6 s  | 72.6 s  |
+| case | mixed | distinct | repeats (py / rs) | status_C | Python | Rust    |
+|------|-------|----------|-------------------|----------|--------|---------|
+| `tiny_2k2b`     | 0 | 4  | 0 / 0            | OPTIMAL  |0.050 s | 0.013 s |
+| `adj0_4k4b`     | 0 | 0  | 0 / 0            | OPTIMAL  |0.009 s | 0.008 s |
+| `mid_16_4lvl`   | 0 | 32 | 72 / 72          | OPTIMAL  |0.211 s | 0.189 s |
+| `full_roster52` | 0 | 98 | 50 / 48          | FEASIBLE |72.6 s  | 72.6 s  |
 
 **Reading the numbers.** Both implementations call the *same* OR-Tools C++
 engine, so the heavy solving time is identical by construction. The Rust win is

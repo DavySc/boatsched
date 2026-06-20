@@ -17,13 +17,16 @@ touching behaviour, and conformance tests catch any drift.
 Lean is the source of truth and is proven internally consistent. The Rust crates
 implement the same logic and are bound to Lean by **oracle vectors**:
 `BoatschedSpec/Conformance.lean` enumerates inputs and the model's verdict,
-`lake exe gen-vectors` dumps them to `conformance_vectors.json`, and
-`rust/crates/core/tests/conformance.rs` reproduces them against the Rust
+`lake exe gen-vectors` dumps them to the checked-in
+`rust/crates/core/tests/conformance_vectors.json`, and
+`rust/crates/core/tests/conformance.rs` embeds + reproduces them against the Rust
 `validate`. The link is *testing*, but the thing being tested against is
-*proven correct*.
+*proven correct*. The vectors deliberately live under `rust/` (not here) so they
+sit inside the Docker build context — the image build's `cargo test` gate runs
+the conformance check too.
 
 ```bash
-cd spec && lake exe gen-vectors > conformance_vectors.json   # regenerate oracle
+cd spec && lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.json
 cd ../rust && cargo test -p boatsched-core --test conformance # check Rust agrees
 ```
 

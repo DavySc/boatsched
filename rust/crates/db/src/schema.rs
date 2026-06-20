@@ -136,7 +136,11 @@ pub fn add_admin_column(conn: &Connection) -> rusqlite::Result<()> {
 /// If no admin exists yet, promote all current instructors to admin.
 pub fn auto_grant_first_admin(conn: &Connection) -> rusqlite::Result<()> {
     let has_admin: bool = conn
-        .query_row("SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1", [], |_| Ok(()))
+        .query_row(
+            "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
         .is_ok();
     if has_admin {
         return Ok(());
@@ -225,9 +229,7 @@ pub fn drop_member_level_column(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Drop the legacy `progress_record` / `day_allocation` tables (idempotent).
 pub fn drop_legacy_camp_tables(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "DROP TABLE IF EXISTS progress_record; DROP TABLE IF EXISTS day_allocation;",
-    )
+    conn.execute_batch("DROP TABLE IF EXISTS progress_record; DROP TABLE IF EXISTS day_allocation;")
 }
 
 /// Error raised when member names collide only by case and must be merged

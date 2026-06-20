@@ -23,7 +23,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
 use yrs::{Array, ArrayPrelim, Doc, Map, Transact};
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 // ---- schedule rows -------------------------------------------------------
 
@@ -31,10 +32,30 @@ fn valid_rows() -> Vec<ScheduleRow> {
     // 4 kids x 2 days = 8 rows, cap 2, 2 boats, no (name,day) duplicate.
     let mut rows = Vec::new();
     for day in ["Sat", "Fri"] {
-        rows.push(ScheduleRow { day: day.into(), boat: 1, name: "Alice".into(), level: "k".into() });
-        rows.push(ScheduleRow { day: day.into(), boat: 1, name: "Bob".into(), level: "k".into() });
-        rows.push(ScheduleRow { day: day.into(), boat: 2, name: "Carol".into(), level: "b".into() });
-        rows.push(ScheduleRow { day: day.into(), boat: 2, name: "Dave".into(), level: "b".into() });
+        rows.push(ScheduleRow {
+            day: day.into(),
+            boat: 1,
+            name: "Alice".into(),
+            level: "k".into(),
+        });
+        rows.push(ScheduleRow {
+            day: day.into(),
+            boat: 1,
+            name: "Bob".into(),
+            level: "k".into(),
+        });
+        rows.push(ScheduleRow {
+            day: day.into(),
+            boat: 2,
+            name: "Carol".into(),
+            level: "b".into(),
+        });
+        rows.push(ScheduleRow {
+            day: day.into(),
+            boat: 2,
+            name: "Dave".into(),
+            level: "b".into(),
+        });
     }
     rows
 }
@@ -42,10 +63,30 @@ fn valid_rows() -> Vec<ScheduleRow> {
 /// Doc rows with Alice in two Sat boats → a (name, day) conflict.
 fn conflicting_rows() -> Vec<ScheduleRow> {
     vec![
-        ScheduleRow { day: "Sat".into(), boat: 1, name: "Alice".into(), level: "k".into() },
-        ScheduleRow { day: "Sat".into(), boat: 1, name: "Bob".into(), level: "k".into() },
-        ScheduleRow { day: "Sat".into(), boat: 2, name: "Alice".into(), level: "k".into() },
-        ScheduleRow { day: "Sat".into(), boat: 2, name: "Dave".into(), level: "b".into() },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 1,
+            name: "Alice".into(),
+            level: "k".into(),
+        },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 1,
+            name: "Bob".into(),
+            level: "k".into(),
+        },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 2,
+            name: "Alice".into(),
+            level: "k".into(),
+        },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 2,
+            name: "Dave".into(),
+            level: "b".into(),
+        },
     ]
 }
 
@@ -56,7 +97,8 @@ fn seed(doc_rows: &[ScheduleRow]) -> (Connection, i64) {
     create_tables(&conn).unwrap();
     run_migrations(&conn).unwrap();
     for n in ["Alice", "Bob", "Carol", "Dave"] {
-        conn.execute("INSERT INTO member (name) VALUES (?)", [n]).unwrap();
+        conn.execute("INSERT INTO member (name) VALUES (?)", [n])
+            .unwrap();
     }
     let season = boatsched_db::create_season(&conn, 2300).unwrap();
     // Enroll so get_schedule (which requires a per-season level) can read back.
@@ -123,7 +165,9 @@ async fn full_sync(ws: &mut Ws) -> Doc {
     let doc = Doc::new();
     doc.get_or_insert_map("schedule");
     let sv = collab::state_vector(&doc);
-    ws.send(Message::Binary(collab::encode_sync_step1(&sv))).await.unwrap();
+    ws.send(Message::Binary(collab::encode_sync_step1(&sv)))
+        .await
+        .unwrap();
     let reply = recv_binary(ws).await;
     let (_, st, payload) = collab::parse_message(&reply).unwrap();
     assert_eq!(st, collab::SYNC_STEP2);
@@ -142,7 +186,11 @@ fn total_members(doc: &Doc) -> usize {
     let txn = doc.transact();
     sched
         .iter(&txn)
-        .map(|(_, v)| v.cast::<yrs::ArrayRef>().map(|a| a.len(&txn) as usize).unwrap_or(0))
+        .map(|(_, v)| {
+            v.cast::<yrs::ArrayRef>()
+                .map(|a| a.len(&txn) as usize)
+                .unwrap_or(0)
+        })
         .sum()
 }
 
@@ -201,7 +249,9 @@ async fn update_from_one_client_reaches_other() {
     let doc2 = full_sync(&mut ws2).await;
 
     let incremental = make_edit(&doc1, "_sentinel", "marker");
-    ws1.send(Message::Binary(collab::encode_update_msg(&incremental))).await.unwrap();
+    ws1.send(Message::Binary(collab::encode_update_msg(&incremental)))
+        .await
+        .unwrap();
 
     // ws2 receives a SYNC_UPDATE broadcast; apply and verify convergence.
     let broadcast = recv_binary(&mut ws2).await;
@@ -222,7 +272,9 @@ async fn update_persisted_and_late_join_sees_it() {
         let mut ws1 = connect(&addr, sid).await;
         let doc1 = full_sync(&mut ws1).await;
         let incremental = make_edit(&doc1, "_late_key", "late_marker");
-        ws1.send(Message::Binary(collab::encode_update_msg(&incremental))).await.unwrap();
+        ws1.send(Message::Binary(collab::encode_update_msg(&incremental)))
+            .await
+            .unwrap();
         // give the server a moment to apply + persist before closing
         tokio::time::sleep(Duration::from_millis(200)).await;
         ws1.close(None).await.unwrap();
@@ -254,7 +306,10 @@ const PYCRDT_UPDATE: &[u8] = &[
 async fn pycrdt_update_decodes_in_yrs() {
     let doc = Doc::new();
     doc.get_or_insert_map("schedule");
-    assert!(collab::apply_update(&doc, PYCRDT_UPDATE), "yrs should decode the pycrdt v1 update");
+    assert!(
+        collab::apply_update(&doc, PYCRDT_UPDATE),
+        "yrs should decode the pycrdt v1 update"
+    );
 
     let mut keys = schedule_keys(&doc);
     keys.sort();

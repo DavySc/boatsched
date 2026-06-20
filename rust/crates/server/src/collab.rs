@@ -292,7 +292,11 @@ pub fn read_assignments(doc: &Doc) -> Result<Vec<(String, String, i64)>, Vec<Con
             };
             let k = (name.clone(), day.clone());
             if let Some(&prev) = seen.get(&k) {
-                conflicts.push(Conflict { name, day: day.clone(), boats: vec![prev, boat] });
+                conflicts.push(Conflict {
+                    name,
+                    day: day.clone(),
+                    boats: vec![prev, boat],
+                });
             } else {
                 seen.insert(k, boat);
             }
@@ -300,7 +304,10 @@ pub fn read_assignments(doc: &Doc) -> Result<Vec<(String, String, i64)>, Vec<Con
     }
 
     if conflicts.is_empty() {
-        Ok(seen.into_iter().map(|((name, day), boat)| (name, day, boat)).collect())
+        Ok(seen
+            .into_iter()
+            .map(|((name, day), boat)| (name, day, boat))
+            .collect())
     } else {
         Err(conflicts)
     }
@@ -312,7 +319,17 @@ mod tests {
 
     #[test]
     fn varint_roundtrip() {
-        for n in [0u64, 1, 127, 128, 255, 300, 16384, 1_000_000, u32::MAX as u64] {
+        for n in [
+            0u64,
+            1,
+            127,
+            128,
+            255,
+            300,
+            16384,
+            1_000_000,
+            u32::MAX as u64,
+        ] {
             let mut buf = Vec::new();
             write_varint(n, &mut buf);
             let (got, pos) = read_varint(&buf, 0).unwrap();
@@ -347,10 +364,30 @@ mod tests {
     #[test]
     fn doc_from_rows_then_read_back() {
         let rows = vec![
-            ScheduleRow { day: "Sat".into(), boat: 1, name: "Alice".into(), level: "k".into() },
-            ScheduleRow { day: "Sat".into(), boat: 1, name: "Bob".into(), level: "k".into() },
-            ScheduleRow { day: "Sat".into(), boat: 2, name: "Carol".into(), level: "b".into() },
-            ScheduleRow { day: "Fri".into(), boat: 1, name: "Alice".into(), level: "k".into() },
+            ScheduleRow {
+                day: "Sat".into(),
+                boat: 1,
+                name: "Alice".into(),
+                level: "k".into(),
+            },
+            ScheduleRow {
+                day: "Sat".into(),
+                boat: 1,
+                name: "Bob".into(),
+                level: "k".into(),
+            },
+            ScheduleRow {
+                day: "Sat".into(),
+                boat: 2,
+                name: "Carol".into(),
+                level: "b".into(),
+            },
+            ScheduleRow {
+                day: "Fri".into(),
+                boat: 1,
+                name: "Alice".into(),
+                level: "k".into(),
+            },
         ];
         let update = init_doc_update_from_rows(&rows);
         let doc = Doc::new();
@@ -366,8 +403,18 @@ mod tests {
     fn read_assignments_detects_conflict() {
         // Alice in two Sat boats → conflict on (Alice, Sat).
         let rows = vec![
-            ScheduleRow { day: "Sat".into(), boat: 1, name: "Alice".into(), level: "k".into() },
-            ScheduleRow { day: "Sat".into(), boat: 2, name: "Alice".into(), level: "k".into() },
+            ScheduleRow {
+                day: "Sat".into(),
+                boat: 1,
+                name: "Alice".into(),
+                level: "k".into(),
+            },
+            ScheduleRow {
+                day: "Sat".into(),
+                boat: 2,
+                name: "Alice".into(),
+                level: "k".into(),
+            },
         ];
         let update = init_doc_update_from_rows(&rows);
         let doc = Doc::new();

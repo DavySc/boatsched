@@ -1,0 +1,6 @@
+# Pin the toolchain so local dev, CI, and the Docker builder all compile with the
+# same rustc. Bump deliberately (and rebuild the image) rather than drifting.
+[toolchain]
+channel = "1.91.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

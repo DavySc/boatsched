@@ -9,7 +9,10 @@ use boatsched_server::{create_app, ServerOptions};
 
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => default,
     }
 }
@@ -52,17 +55,47 @@ fn parse_args() -> Args {
     };
     while i < argv.len() {
         match argv[i].as_str() {
-            "--port" => { i += 1; port = argv[i].parse().unwrap_or(8000); }
-            "--host" => { i += 1; host = argv[i].clone(); }
-            "--boats" => { i += 1; cfg.boats = argv[i].parse().unwrap_or(13); }
-            "--adj" => { i += 1; cfg.adj = argv[i].parse().unwrap_or(1); }
-            "--stage-seconds" => { i += 1; cfg.stage_seconds = argv[i].parse().unwrap_or(45.0); }
-            "--seconds" => { i += 1; cfg.seconds = argv[i].parse().unwrap_or(60.0); }
-            "--workers" => { i += 1; cfg.workers = argv[i].parse().unwrap_or(8); }
-            "--db" => { i += 1; db = Some(argv[i].clone()); }
-            "--levels" => { cfg.levels = take_list(&argv, &mut i); }
-            "--restricted" => { cfg.restricted = take_list(&argv, &mut i); }
-            "--diverse" => { cfg.diverse = take_list(&argv, &mut i); }
+            "--port" => {
+                i += 1;
+                port = argv[i].parse().unwrap_or(8000);
+            }
+            "--host" => {
+                i += 1;
+                host = argv[i].clone();
+            }
+            "--boats" => {
+                i += 1;
+                cfg.boats = argv[i].parse().unwrap_or(13);
+            }
+            "--adj" => {
+                i += 1;
+                cfg.adj = argv[i].parse().unwrap_or(1);
+            }
+            "--stage-seconds" => {
+                i += 1;
+                cfg.stage_seconds = argv[i].parse().unwrap_or(45.0);
+            }
+            "--seconds" => {
+                i += 1;
+                cfg.seconds = argv[i].parse().unwrap_or(60.0);
+            }
+            "--workers" => {
+                i += 1;
+                cfg.workers = argv[i].parse().unwrap_or(8);
+            }
+            "--db" => {
+                i += 1;
+                db = Some(argv[i].clone());
+            }
+            "--levels" => {
+                cfg.levels = take_list(&argv, &mut i);
+            }
+            "--restricted" => {
+                cfg.restricted = take_list(&argv, &mut i);
+            }
+            "--diverse" => {
+                cfg.diverse = take_list(&argv, &mut i);
+            }
             other => eprintln!("[warn] ignoring unknown arg: {other}"),
         }
         i += 1;
@@ -70,7 +103,12 @@ fn parse_args() -> Args {
     if cfg.levels.is_empty() {
         cfg.levels = svec(&["k", "b", "A", "B"]);
     }
-    Args { port, host, cfg, db }
+    Args {
+        port,
+        host,
+        cfg,
+        db,
+    }
 }
 
 #[tokio::main]
@@ -106,7 +144,10 @@ async fn main() -> std::process::ExitCode {
     // runs migrations first; do it here in the equivalent order).
     if let Some(conn) = &db_conn {
         boatsched_db::schema::run_migrations(conn).expect("migrations");
-        match (std::env::var("BOATSCHED_ADMIN"), std::env::var("BOATSCHED_ADMIN_PW")) {
+        match (
+            std::env::var("BOATSCHED_ADMIN"),
+            std::env::var("BOATSCHED_ADMIN_PW"),
+        ) {
             (Ok(name), Ok(pw)) if !name.is_empty() && !pw.is_empty() => {
                 match boatsched_db::ensure_admin(conn, &name, &pw) {
                     Ok(seeded) => println!(
@@ -144,7 +185,10 @@ async fn main() -> std::process::ExitCode {
 
     println!("boatsched server at http://localhost:{}", args.port);
     println!("  boats={} levels={:?}", cfg.boats, cfg.levels);
-    println!("  restricted={:?} diverse={:?}", cfg.restricted, cfg.diverse);
+    println!(
+        "  restricted={:?} diverse={:?}",
+        cfg.restricted, cfg.diverse
+    );
     println!(
         "  require_auth={require_auth} secure_cookies={secure_cookies} \
          min_password_len={min_password_len}"

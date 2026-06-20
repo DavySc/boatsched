@@ -1,56 +1,49 @@
 name: CI/CD
 
-# Test on every push to main; deploy only if tests pass.
+# Build + test the Rust image on every push to main; deploy only if it builds.
 on:
   push:
     branches: [main]
 
+env:
+  # Codeberg container registry. The image is self-contained (Rust binary +
+  # OR-Tools native libs), so the production host only needs Docker.
+  REGISTRY: codeberg.org
+  IMAGE: codeberg.org/oventosti/boatsched
+
 jobs:
-  test:
-    runs-on: codeberg-small
-    # Fail clearly if something hangs instead of burning the runner's wall-clock cap.
-    timeout-minutes: 20
-    container:
-      # node:22-bookworm is a fraction of the catthehacker act image to pull on
-      # Codeberg's slow shared runners, yet still ships node (for the JS actions
-      # below) and git (buildpack-deps base, used by actions/checkout). Debian
-      # bookworm's system python3 is already 3.11, so we apt-install it directly
-      # instead of actions/setup-python — that action can't fetch interpreters
-      # from Codeberg's network ("version 3.11 was not found").
-      image: node:22-bookworm
+  build:
+    runs-on: docker
+    # The multi-stage build compiles the workspace, downloads the OR-Tools SDK,
+    # and runs `cargo test` as the gate — give it room on slow shared runners.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        # bookworm ships CPython 3.11; venv keeps us off PEP-668 externally-managed
-        # restrictions. Matches the deployment baseline within requires-python>=3.9.
+      # NOTE: this job needs a runner that can build OCI images (Docker socket /
+      # buildx). `runs-on: docker` assumes such a runner is registered. If the
+      # shared runner cannot build images, remove this whole `build` job and set
+      # BUILD_ON_HOST=1 for deploy.sh (build-on-host fallback) — see deploy/README.md.
+      - name: Log in to the container registry
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 python3-venv
-          python3 -m venv /opt/venv
+          echo "${{ secrets.REGISTRY_TOKEN }}" \
+            | docker login "$REGISTRY" -u "${{ secrets.REGISTRY_USER }}" --password-stdin
 
-      # Cache the pip download dir so the heavy ortools wheel isn't re-fetched on
-      # every run — the main thing pushing this job past the time limit.
-      - name: Cache pip downloads
-        uses: actions/cache@v4
-        with:
-          path: /root/.cache/pip
-          key: pip-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-
-
-      - name: Install package with dev extras
+      - name: Build image (compiles + runs cargo test in the builder stage)
         run: |
-          /opt/venv/bin/pip install --upgrade pip
-          /opt/venv/bin/pip install ".[dev]"
+          docker build \
+            -t "$IMAGE:${{ github.sha }}" \
+            -t "$IMAGE:latest" \
+            rust/
 
-      - name: Run tests
-        # --no-cov: coverage is pure overhead for a pass/fail gate (it's collected
-        # locally via the pyproject addopts when developing).
-        run: /opt/venv/bin/pytest --no-cov
+      - name: Push image
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
 
   deploy:
-    needs: test
+    needs: build
     runs-on: codeberg-small
     container:
       image: ghcr.io/catthehacker/ubuntu:act-latest
@@ -58,7 +51,7 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' }}
     steps:
       # ssh client + git are already present in the image; no install needed.
-      # (These runners can't run a Docker daemon — we only SSH out, so that's fine.)
+      # The box pulls the image we just pushed and runs the gated cutover.
       - name: Deploy over SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -76,6 +69,8 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KEY_DIR/known_hosts"
 
           # Host key is pinned via known_hosts — StrictHostKeyChecking stays on.
+          # deploy.sh: backup → pull → validate-on-copy → handover → health-gate
+          # → auto-rollback. It never leaves prod broken.
           ssh -i "$KEY_DIR/id_deploy" \
               -o IdentitiesOnly=yes \
               -o UserKnownHostsFile="$KEY_DIR/known_hosts" \

@@ -2,9 +2,11 @@
 //! *proven* Lean model in `../../../spec`.
 //!
 //! The vectors (inputs + the model's verdict for each) are generated from the
-//! Lean spec and checked in. Regenerate them after changing the model with:
+//! Lean spec and checked in *next to this test* — inside the `rust/` Docker build
+//! context — so the image build's `cargo test` gate can run this conformance
+//! check too. Regenerate them after changing the model with:
 //!
-//!     cd spec && lake exe gen-vectors > conformance_vectors.json
+//!     cd spec && lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.json
 //!
 //! The verdict tags mirror `BoatschedSpec.Conformance.verdict`. Rust's
 //! `ValidationError` carries only a message string (no taxonomy), so we
@@ -61,17 +63,12 @@ fn verdict_of(kids: &[Kid], cfg: &Config) -> &'static str {
 
 #[test]
 fn rust_validate_matches_lean_oracle() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../spec/conformance_vectors.json"
-    );
-    let data = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read Lean conformance vectors at {path}: {e}\n\
-             regenerate with: cd spec && lake exe gen-vectors > conformance_vectors.json"
-        )
-    });
-    let cases: Vec<CaseJson> = serde_json::from_str(&data).expect("parse conformance vectors");
+    // Embedded at compile time so the test is self-contained and works inside the
+    // Docker build context (which is `rust/` only — `spec/` is not shipped there).
+    // Regenerate with:
+    //   cd spec && lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.json
+    let data = include_str!("conformance_vectors.json");
+    let cases: Vec<CaseJson> = serde_json::from_str(data).expect("parse conformance vectors");
     assert!(!cases.is_empty(), "no conformance cases found");
 
     for c in &cases {

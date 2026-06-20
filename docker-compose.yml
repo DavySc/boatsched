@@ -1,22 +1,59 @@
+# boatsched — production stack (Rust server, containerized).
+#
+# The host only needs Docker; the image is self-contained (binary + OR-Tools
+# native libs). Managed on the box by deploy/boatsched-docker.service.
+#
+#   docker compose pull   # registry-based deploy (default)
+#   docker compose build  # build-on-host fallback (uses rust/Dockerfile)
+#   docker compose up -d
+#
+# The app is SINGLE-PROCESS by design (in-memory sessions / collab docs / jobs).
+# Do NOT add replicas or a second web process.
+
 services:
   boatsched:
-    build: .
+    # Registry image by default; `docker compose build` also works (build-on-host
+    # fallback) because the build context is declared too.
+    image: ${BOATSCHED_IMAGE:-codeberg.org/oventosti/boatsched:latest}
+    build:
+      context: ./rust
+    container_name: boatsched
     restart: unless-stopped
-    # Bind to localhost ONLY — never publish the app port to the internet.
-    # Put nginx (TLS, rate limiting, security headers) in front of it.
+
+    # Bind to localhost ONLY — nginx (TLS, rate limiting, headers) is the public
+    # listener and proxies to 127.0.0.1:8000. Never publish this to 0.0.0.0.
     ports:
       - "127.0.0.1:8000:8000"
+
+    # Bind-mount the REAL DB directory so the live boatsched.db (+ WAL/SHM) is
+    # used unchanged — no data migration, no named-volume copy. The Rust server
+    # opens it in WAL mode exactly like the Python one did.
     volumes:
-      - boatsched_data:/data
-    # Secrets come from a local .env file (chmod 600, NOT committed).
-    # Required: BOATSCHED_ADMIN, BOATSCHED_ADMIN_PW
+      - /var/lib/boatsched:/data
+
+    # Secrets + SOLVER_WORKERS come from the existing env file (root:deploy 0640).
+    # Required: BOATSCHED_ADMIN, BOATSCHED_ADMIN_PW.
     env_file:
-      - .env
+      - /etc/boatsched/env
     environment:
       - BOATSCHED_DB=/data/boatsched.db
       - BOATSCHED_REQUIRE_AUTH=1
       - BOATSCHED_SECURE_COOKIES=1
       - BOATSCHED_MIN_PASSWORD_LEN=8
 
-volumes:
-  boatsched_data:
+    # Container-level liveness; the cutover script ALSO polls /api/health from the
+    # host before/after handover. /api/health is public (no auth).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # OR-Tools maps executable memory — do NOT add a seccomp/no-exec profile that
+    # blocks it (mirrors the MemoryDenyWriteExecute note in boatsched.service).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

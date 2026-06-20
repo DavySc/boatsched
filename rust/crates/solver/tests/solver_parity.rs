@@ -107,7 +107,10 @@ fn uniform_boat_capacity() {
     let cap = kids.len() as i64 / cfg.boats;
     for day in cfg.days() {
         for boat in 1..=cfg.boats {
-            let count = rows.iter().filter(|r| r.day == day && r.boat == boat).count() as i64;
+            let count = rows
+                .iter()
+                .filter(|r| r.day == day && r.boat == boat)
+                .count() as i64;
             assert_eq!(count, cap);
         }
     }

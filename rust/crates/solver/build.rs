@@ -11,26 +11,43 @@ use std::path::{Path, PathBuf};
 fn find_sdk() -> PathBuf {
     if let Ok(root) = std::env::var("ORTOOLS_ROOT") {
         let p = PathBuf::from(root);
-        assert!(p.join("include/ortools/sat/cp_model.h").exists(),
-            "ORTOOLS_ROOT={} does not contain include/ortools/sat/cp_model.h", p.display());
+        assert!(
+            p.join("include/ortools/sat/cp_model.h").exists(),
+            "ORTOOLS_ROOT={} does not contain include/ortools/sat/cp_model.h",
+            p.display()
+        );
         return p;
     }
     // Auto-discover under ../../vendor relative to this crate.
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let vendor = manifest.join("../../vendor").canonicalize().unwrap_or_else(|_| {
-        panic!("OR-Tools SDK not found: set ORTOOLS_ROOT or place it under rust/vendor/ \
-                (see rust/README.md). manifest={}", manifest.display())
-    });
-    for entry in std::fs::read_dir(&vendor).expect("read rust/vendor").flatten() {
+    let vendor = manifest
+        .join("../../vendor")
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            panic!(
+                "OR-Tools SDK not found: set ORTOOLS_ROOT or place it under rust/vendor/ \
+                (see rust/README.md). manifest={}",
+                manifest.display()
+            )
+        });
+    for entry in std::fs::read_dir(&vendor)
+        .expect("read rust/vendor")
+        .flatten()
+    {
         let p = entry.path();
         if p.is_dir()
-            && p.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.starts_with("or-tools"))
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |n| n.starts_with("or-tools"))
             && p.join("include/ortools/sat/cp_model.h").exists()
         {
             return p;
         }
     }
-    panic!("OR-Tools SDK not found under {}; set ORTOOLS_ROOT (see rust/README.md)", vendor.display());
+    panic!(
+        "OR-Tools SDK not found under {}; set ORTOOLS_ROOT (see rust/README.md)",
+        vendor.display()
+    );
 }
 
 fn main() {

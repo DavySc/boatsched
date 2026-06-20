@@ -25,20 +25,47 @@ fn member_names(conn: &Connection) -> std::collections::HashSet<String> {
 }
 
 fn id_of(conn: &Connection, name: &str) -> i64 {
-    conn.query_row("SELECT id FROM member WHERE name=?1", params![name], |r| r.get(0))
-        .unwrap()
+    conn.query_row("SELECT id FROM member WHERE name=?1", params![name], |r| {
+        r.get(0)
+    })
+    .unwrap()
 }
 
 fn members4() -> Vec<Kid> {
-    vec![kid("Alice", "k"), kid("Bob", "k"), kid("Carol", "b"), kid("Dave", "b")]
+    vec![
+        kid("Alice", "k"),
+        kid("Bob", "k"),
+        kid("Carol", "b"),
+        kid("Dave", "b"),
+    ]
 }
 
 fn result4() -> Vec<ScheduleRow> {
     vec![
-        ScheduleRow { day: "Sat".into(), boat: 1, name: "Alice".into(), level: "k".into() },
-        ScheduleRow { day: "Sat".into(), boat: 1, name: "Bob".into(), level: "k".into() },
-        ScheduleRow { day: "Sat".into(), boat: 2, name: "Carol".into(), level: "b".into() },
-        ScheduleRow { day: "Sat".into(), boat: 2, name: "Dave".into(), level: "b".into() },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 1,
+            name: "Alice".into(),
+            level: "k".into(),
+        },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 1,
+            name: "Bob".into(),
+            level: "k".into(),
+        },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 2,
+            name: "Carol".into(),
+            level: "b".into(),
+        },
+        ScheduleRow {
+            day: "Sat".into(),
+            boat: 2,
+            name: "Dave".into(),
+            level: "b".into(),
+        },
     ]
 }
 
@@ -46,7 +73,11 @@ fn result4() -> Vec<ScheduleRow> {
 fn seed_season(conn: &Connection, year: i64) -> i64 {
     let sid = helpers::create_season(conn, year).unwrap();
     for n in ["Carol", "Dave"] {
-        conn.execute("INSERT OR IGNORE INTO member (name) VALUES (?1)", params![n]).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO member (name) VALUES (?1)",
+            params![n],
+        )
+        .unwrap();
     }
     helpers::add_or_update_members(conn, &members4(), Some(sid)).unwrap();
     sid
@@ -71,7 +102,9 @@ fn non_k_member_not_found_raises() {
 fn empty_list_inserts_nothing() {
     let conn = fconn();
     helpers::add_or_update_members(&conn, &[], None).unwrap();
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM member", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM member", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 0);
 }
 
@@ -81,7 +114,9 @@ fn no_duplicate_row_on_name_conflict() {
     helpers::add_or_update_members(&conn, &[kid("Alice", "k")], None).unwrap();
     helpers::add_or_update_members(&conn, &[kid("Alice", "k")], None).unwrap();
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM member WHERE name='Alice'", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM member WHERE name='Alice'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(n, 1);
 }
@@ -109,7 +144,9 @@ fn level_stored_and_updated_on_conflict() {
 fn no_enrollment_without_season_id() {
     let conn = fconn();
     helpers::add_or_update_members(&conn, &[kid("Alice", "k")], None).unwrap();
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM enrollment", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM enrollment", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 0);
 }
 
@@ -117,11 +154,16 @@ fn no_enrollment_without_season_id() {
 fn get_season_roster_returns_enrolled() {
     let conn = fconn();
     let sid = helpers::create_season(&conn, 2026).unwrap();
-    conn.execute("INSERT INTO member (name) VALUES ('Bob')", []).unwrap();
-    helpers::add_or_update_members(&conn, &[kid("Alice", "k"), kid("Bob", "b")], Some(sid)).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Bob')", [])
+        .unwrap();
+    helpers::add_or_update_members(&conn, &[kid("Alice", "k"), kid("Bob", "b")], Some(sid))
+        .unwrap();
     let mut roster = helpers::get_season_roster(&conn, sid).unwrap();
     roster.sort();
-    assert_eq!(roster, vec![("Alice".into(), "k".into()), ("Bob".into(), "b".into())]);
+    assert_eq!(
+        roster,
+        vec![("Alice".into(), "k".into()), ("Bob".into(), "b".into())]
+    );
 }
 
 // ---- create_season / list_seasons ----
@@ -138,7 +180,11 @@ fn list_seasons_newest_first() {
     for y in [2023, 2025, 2024] {
         helpers::create_season(&conn, y).unwrap();
     }
-    let years: Vec<i64> = helpers::list_seasons(&conn).unwrap().iter().map(|s| s.year).collect();
+    let years: Vec<i64> = helpers::list_seasons(&conn)
+        .unwrap()
+        .iter()
+        .map(|s| s.year)
+        .collect();
     assert_eq!(years, vec![2025, 2024, 2023]);
 }
 
@@ -150,11 +196,19 @@ fn save_schedule_persists_and_returns_id() {
     let schedule_id = helpers::save_schedule(&conn, sid, "{\"boats\": 2}", &result4()).unwrap();
     assert!(schedule_id > 0);
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?1", params![schedule_id], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM boat_assignment WHERE schedule_id=?1",
+            params![schedule_id],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(count, 4);
     let cfg: String = conn
-        .query_row("SELECT config FROM schedule WHERE id=?1", params![schedule_id], |r| r.get(0))
+        .query_row(
+            "SELECT config FROM schedule WHERE id=?1",
+            params![schedule_id],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(cfg, "{\"boats\": 2}");
 }
@@ -163,7 +217,12 @@ fn save_schedule_persists_and_returns_id() {
 fn save_schedule_unknown_member_raises() {
     let conn = fconn();
     let sid = seed_season(&conn, 2026);
-    let bad = vec![ScheduleRow { day: "Sat".into(), boat: 1, name: "Nobody".into(), level: "k".into() }];
+    let bad = vec![ScheduleRow {
+        day: "Sat".into(),
+        boat: 1,
+        name: "Nobody".into(),
+        level: "k".into(),
+    }];
     let err = helpers::save_schedule(&conn, sid, "{}", &bad).unwrap_err();
     assert!(format!("{err}").contains("not found"));
 }
@@ -190,9 +249,14 @@ fn get_schedule_empty_for_unknown_id() {
 fn get_schedule_raises_on_missing_enrollment() {
     let conn = fconn();
     let sid = helpers::create_season(&conn, 2026).unwrap();
-    conn.execute("INSERT INTO member (name) VALUES ('Alice')", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Alice')", [])
+        .unwrap();
     let alice = id_of(&conn, "Alice");
-    conn.execute("INSERT INTO schedule (season_id, config) VALUES (?1, '{}')", params![sid]).unwrap();
+    conn.execute(
+        "INSERT INTO schedule (season_id, config) VALUES (?1, '{}')",
+        params![sid],
+    )
+    .unwrap();
     let sch_id = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day) VALUES (?1, ?2, 1, 'Sat')",
@@ -209,7 +273,11 @@ fn list_schedules_newest_first_and_isolated() {
     let sid = seed_season(&conn, 2026);
     let id1 = helpers::save_schedule(&conn, sid, "{}", &result4()).unwrap();
     let id2 = helpers::save_schedule(&conn, sid, "{}", &result4()).unwrap();
-    let ids: Vec<i64> = helpers::list_schedules(&conn, sid).unwrap().iter().map(|s| s.id).collect();
+    let ids: Vec<i64> = helpers::list_schedules(&conn, sid)
+        .unwrap()
+        .iter()
+        .map(|s| s.id)
+        .collect();
     assert_eq!(ids, vec![id2, id1]);
     let sid2 = helpers::create_season(&conn, 2027).unwrap();
     assert!(helpers::list_schedules(&conn, sid2).unwrap().is_empty());
@@ -225,7 +293,10 @@ fn swap_exchanges_and_reversible_and_noop() {
         conn.query_row(
             "SELECT ba.boat_id FROM boat_assignment ba JOIN member m ON m.id=ba.member_id \
              WHERE ba.schedule_id=?1 AND ba.day='Sat' AND m.name=?2",
-            params![schedule_id, name], |r| r.get(0)).unwrap()
+            params![schedule_id, name],
+            |r| r.get(0),
+        )
+        .unwrap()
     };
     let a_before = boat_of("Alice");
     let c_before = boat_of("Carol");
@@ -258,7 +329,10 @@ fn rename_boat_set_and_clear() {
     helpers::rename_boat(&conn, 1, Some("Blue Jay")).unwrap();
     let boats = helpers::list_boats(&conn).unwrap();
     assert_eq!(boats.len(), 13);
-    assert_eq!(boats.iter().find(|b| b.id == 1).unwrap().name.as_deref(), Some("Blue Jay"));
+    assert_eq!(
+        boats.iter().find(|b| b.id == 1).unwrap().name.as_deref(),
+        Some("Blue Jay")
+    );
     helpers::rename_boat(&conn, 1, Some("")).unwrap(); // empty clears
     let boats = helpers::list_boats(&conn).unwrap();
     assert_eq!(boats.iter().find(|b| b.id == 1).unwrap().name, None);
@@ -292,10 +366,16 @@ fn seed_members_counts_and_trimming() {
 fn list_members_active_ordered_excludes_inactive() {
     let conn = fconn();
     for n in ["Zara", "Anna"] {
-        conn.execute("INSERT INTO member (name) VALUES (?1)", params![n]).unwrap();
+        conn.execute("INSERT INTO member (name) VALUES (?1)", params![n])
+            .unwrap();
     }
-    conn.execute("INSERT INTO member (name, active) VALUES ('Gone', 0)", []).unwrap();
-    let names: Vec<String> = helpers::list_members(&conn).unwrap().into_iter().map(|m| m.name).collect();
+    conn.execute("INSERT INTO member (name, active) VALUES ('Gone', 0)", [])
+        .unwrap();
+    let names: Vec<String> = helpers::list_members(&conn)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
     assert_eq!(names, vec!["Anna".to_string(), "Zara".to_string()]);
     assert!(!names.contains(&"Gone".to_string()));
 }
@@ -304,15 +384,25 @@ fn list_members_active_ordered_excludes_inactive() {
 #[test]
 fn delete_member_soft_and_blocks_instructor() {
     let conn = fconn();
-    conn.execute("INSERT INTO member (name) VALUES ('Del')", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Del')", [])
+        .unwrap();
     let mid = id_of(&conn, "Del");
     helpers::delete_member(&conn, mid).unwrap();
-    let active: i64 = conn.query_row("SELECT active FROM member WHERE id=?1", params![mid], |r| r.get(0)).unwrap();
+    let active: i64 = conn
+        .query_row("SELECT active FROM member WHERE id=?1", params![mid], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(active, 0);
 
-    conn.execute("INSERT INTO member (name) VALUES ('Inst')", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Inst')", [])
+        .unwrap();
     let imid = id_of(&conn, "Inst");
-    conn.execute("INSERT INTO instructor (member_id) VALUES (?1)", params![imid]).unwrap();
+    conn.execute(
+        "INSERT INTO instructor (member_id) VALUES (?1)",
+        params![imid],
+    )
+    .unwrap();
     let err = helpers::delete_member(&conn, imid).unwrap_err();
     assert!(format!("{err}").contains("instructeur"));
 }
@@ -320,8 +410,10 @@ fn delete_member_soft_and_blocks_instructor() {
 #[test]
 fn rename_member_updates_empty_and_collision() {
     let conn = fconn();
-    conn.execute("INSERT INTO member (name) VALUES ('Old')", []).unwrap();
-    conn.execute("INSERT INTO member (name) VALUES ('Exists')", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Old')", [])
+        .unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Exists')", [])
+        .unwrap();
     let mid = id_of(&conn, "Old");
     helpers::rename_member(&conn, mid, "New").unwrap();
     assert!(member_names(&conn).contains("New"));
@@ -335,14 +427,31 @@ fn rename_member_updates_empty_and_collision() {
 #[test]
 fn set_admin_promote_demote() {
     let conn = fconn();
-    conn.execute("INSERT INTO member (name) VALUES ('I')", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('I')", [])
+        .unwrap();
     let mid = id_of(&conn, "I");
-    conn.execute("INSERT INTO instructor (member_id, is_admin) VALUES (?1, 0)", params![mid]).unwrap();
+    conn.execute(
+        "INSERT INTO instructor (member_id, is_admin) VALUES (?1, 0)",
+        params![mid],
+    )
+    .unwrap();
     helpers::set_admin(&conn, mid, true).unwrap();
-    let v: i64 = conn.query_row("SELECT is_admin FROM instructor WHERE member_id=?1", params![mid], |r| r.get(0)).unwrap();
+    let v: i64 = conn
+        .query_row(
+            "SELECT is_admin FROM instructor WHERE member_id=?1",
+            params![mid],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(v, 1);
     helpers::set_admin(&conn, mid, false).unwrap();
-    let v: i64 = conn.query_row("SELECT is_admin FROM instructor WHERE member_id=?1", params![mid], |r| r.get(0)).unwrap();
+    let v: i64 = conn
+        .query_row(
+            "SELECT is_admin FROM instructor WHERE member_id=?1",
+            params![mid],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(v, 0);
 }
 
@@ -351,12 +460,19 @@ fn set_admin_promote_demote() {
 fn yjs_state_roundtrip() {
     let conn = fconn();
     let sid = helpers::create_season(&conn, 9001).unwrap();
-    conn.execute("INSERT INTO schedule (season_id, config) VALUES (?1, '{}')", params![sid]).unwrap();
+    conn.execute(
+        "INSERT INTO schedule (season_id, config) VALUES (?1, '{}')",
+        params![sid],
+    )
+    .unwrap();
     let sch_id = conn.last_insert_rowid();
     assert_eq!(helpers::get_yjs_state(&conn, sch_id).unwrap(), None);
     let payload = b"\x00\x01\x02state";
     helpers::set_yjs_state(&conn, sch_id, payload).unwrap();
-    assert_eq!(helpers::get_yjs_state(&conn, sch_id).unwrap().as_deref(), Some(payload.as_slice()));
+    assert_eq!(
+        helpers::get_yjs_state(&conn, sch_id).unwrap().as_deref(),
+        Some(payload.as_slice())
+    );
     assert_eq!(helpers::get_yjs_state(&conn, 99999).unwrap(), None);
 }
 
@@ -365,13 +481,30 @@ fn yjs_state_roundtrip() {
 fn start_date_roundtrip_and_overwrite() {
     let conn = fconn();
     let sid = helpers::create_season(&conn, 9002).unwrap();
-    conn.execute("INSERT INTO schedule (season_id, config) VALUES (?1, '{}')", params![sid]).unwrap();
+    conn.execute(
+        "INSERT INTO schedule (season_id, config) VALUES (?1, '{}')",
+        params![sid],
+    )
+    .unwrap();
     let sch_id = conn.last_insert_rowid();
-    assert_eq!(helpers::get_schedule_start_date(&conn, sch_id).unwrap(), None);
+    assert_eq!(
+        helpers::get_schedule_start_date(&conn, sch_id).unwrap(),
+        None
+    );
     helpers::set_schedule_start_date(&conn, sch_id, Some("2099-07-01")).unwrap();
-    assert_eq!(helpers::get_schedule_start_date(&conn, sch_id).unwrap().as_deref(), Some("2099-07-01"));
+    assert_eq!(
+        helpers::get_schedule_start_date(&conn, sch_id)
+            .unwrap()
+            .as_deref(),
+        Some("2099-07-01")
+    );
     helpers::set_schedule_start_date(&conn, sch_id, Some("2099-08-01")).unwrap();
-    assert_eq!(helpers::get_schedule_start_date(&conn, sch_id).unwrap().as_deref(), Some("2099-08-01"));
+    assert_eq!(
+        helpers::get_schedule_start_date(&conn, sch_id)
+            .unwrap()
+            .as_deref(),
+        Some("2099-08-01")
+    );
 }
 
 // ---- replace_assignments ----
@@ -380,26 +513,44 @@ fn replace_assignments_replaces_and_unknown_raises() {
     let conn = fconn();
     let sid = helpers::create_season(&conn, 9003).unwrap();
     for n in ["Alice", "Bob"] {
-        conn.execute("INSERT INTO member (name) VALUES (?1)", params![n]).unwrap();
+        conn.execute("INSERT INTO member (name) VALUES (?1)", params![n])
+            .unwrap();
         let mid = id_of(&conn, n);
-        conn.execute("INSERT INTO enrollment (member_id, season_id, level) VALUES (?1, ?2, 'k')", params![mid, sid]).unwrap();
+        conn.execute(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (?1, ?2, 'k')",
+            params![mid, sid],
+        )
+        .unwrap();
     }
-    conn.execute("INSERT INTO schedule (season_id, config) VALUES (?1, '{}')", params![sid]).unwrap();
+    conn.execute(
+        "INSERT INTO schedule (season_id, config) VALUES (?1, '{}')",
+        params![sid],
+    )
+    .unwrap();
     let sch_id = conn.last_insert_rowid();
     for n in ["Alice", "Bob"] {
         let mid = id_of(&conn, n);
         conn.execute("INSERT INTO boat_assignment (schedule_id, member_id, boat_id, day) VALUES (?1, ?2, 1, 'Sat')", params![sch_id, mid]).unwrap();
     }
-    helpers::replace_assignments(&conn, sch_id, &[
-        ("Alice".into(), "Sat".into(), 2),
-        ("Bob".into(), "Sat".into(), 2),
-    ]).unwrap();
+    helpers::replace_assignments(
+        &conn,
+        sch_id,
+        &[
+            ("Alice".into(), "Sat".into(), 2),
+            ("Bob".into(), "Sat".into(), 2),
+        ],
+    )
+    .unwrap();
     let all_two: bool = conn
-        .prepare("SELECT boat_id FROM boat_assignment WHERE schedule_id=?1").unwrap()
-        .query_map(params![sch_id], |r| r.get::<_, i64>(0)).unwrap()
-        .filter_map(Result::ok).all(|b| b == 2);
+        .prepare("SELECT boat_id FROM boat_assignment WHERE schedule_id=?1")
+        .unwrap()
+        .query_map(params![sch_id], |r| r.get::<_, i64>(0))
+        .unwrap()
+        .filter_map(Result::ok)
+        .all(|b| b == 2);
     assert!(all_two);
-    let err = helpers::replace_assignments(&conn, sch_id, &[("NoSuch".into(), "Sat".into(), 1)]).unwrap_err();
+    let err = helpers::replace_assignments(&conn, sch_id, &[("NoSuch".into(), "Sat".into(), 1)])
+        .unwrap_err();
     assert!(format!("{err}").contains("not found"));
 }
 
@@ -407,7 +558,11 @@ fn replace_assignments_replaces_and_unknown_raises() {
 fn make_instructor(conn: &Connection, name: &str) -> i64 {
     helpers::add_or_update_members(conn, &[kid(name, "k")], None).unwrap();
     let mid = id_of(conn, name);
-    conn.execute("INSERT OR IGNORE INTO instructor (member_id) VALUES (?1)", params![mid]).unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO instructor (member_id) VALUES (?1)",
+        params![mid],
+    )
+    .unwrap();
     mid
 }
 
@@ -417,7 +572,11 @@ fn password_hash_not_plaintext_and_lengths() {
     let mid = make_instructor(&conn, "Hank");
     helpers::set_instructor_password(&conn, mid, "plaintextpw").unwrap();
     let (ph, ps): (Vec<u8>, Vec<u8>) = conn
-        .query_row("SELECT password_hash, password_salt FROM instructor WHERE member_id=?1", params![mid], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row(
+            "SELECT password_hash, password_salt FROM instructor WHERE member_id=?1",
+            params![mid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
     assert_eq!(ph.len(), 64);
     assert_eq!(ps.len(), 32);
@@ -431,11 +590,29 @@ fn password_verify_correct_wrong_and_distinct_salts() {
     let m2 = make_instructor(&conn, "Leo");
     helpers::set_instructor_password(&conn, m1, "shared").unwrap();
     helpers::set_instructor_password(&conn, m2, "shared").unwrap();
-    assert_eq!(helpers::verify_instructor_login(&conn, "Kate", "shared").unwrap(), Some(m1));
-    assert_eq!(helpers::verify_instructor_login(&conn, "Kate", "wrong").unwrap(), None);
+    assert_eq!(
+        helpers::verify_instructor_login(&conn, "Kate", "shared").unwrap(),
+        Some(m1)
+    );
+    assert_eq!(
+        helpers::verify_instructor_login(&conn, "Kate", "wrong").unwrap(),
+        None
+    );
     // same password, different salt → different stored hash
-    let h1: Vec<u8> = conn.query_row("SELECT password_hash FROM instructor WHERE member_id=?1", params![m1], |r| r.get(0)).unwrap();
-    let h2: Vec<u8> = conn.query_row("SELECT password_hash FROM instructor WHERE member_id=?1", params![m2], |r| r.get(0)).unwrap();
+    let h1: Vec<u8> = conn
+        .query_row(
+            "SELECT password_hash FROM instructor WHERE member_id=?1",
+            params![m1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let h2: Vec<u8> = conn
+        .query_row(
+            "SELECT password_hash FROM instructor WHERE member_id=?1",
+            params![m2],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_ne!(h1, h2);
 }
 
@@ -445,7 +622,10 @@ fn login_is_case_insensitive_on_name() {
     let mid = make_instructor(&conn, "Alice");
     helpers::set_instructor_password(&conn, mid, "secret123").unwrap();
     // NOCASE name match
-    assert_eq!(helpers::verify_instructor_login(&conn, "alice", "secret123").unwrap(), Some(mid));
+    assert_eq!(
+        helpers::verify_instructor_login(&conn, "alice", "secret123").unwrap(),
+        Some(mid)
+    );
 }
 
 // ---- ensure_admin (mirrors TestEnsureAdmin) ----
@@ -454,19 +634,36 @@ fn ensure_admin_creates_idempotent_promotes_empty() {
     let conn = fconn();
     let created = helpers::ensure_admin(&conn, "Boss", "bosspw1234").unwrap();
     assert!(created);
-    assert!(helpers::verify_instructor_login(&conn, "Boss", "bosspw1234").unwrap().is_some());
+    assert!(
+        helpers::verify_instructor_login(&conn, "Boss", "bosspw1234")
+            .unwrap()
+            .is_some()
+    );
     let is_admin: i64 = conn.query_row(
         "SELECT is_admin FROM instructor i JOIN member m ON m.id=i.member_id WHERE m.name='Boss'", [], |r| r.get(0)).unwrap();
     assert_eq!(is_admin, 1);
     // idempotent: second call with different pw keeps original
     let created2 = helpers::ensure_admin(&conn, "Boss", "different").unwrap();
     assert!(!created2);
-    assert!(helpers::verify_instructor_login(&conn, "Boss", "bosspw1234").unwrap().is_some());
-    assert!(helpers::verify_instructor_login(&conn, "Boss", "different").unwrap().is_none());
+    assert!(
+        helpers::verify_instructor_login(&conn, "Boss", "bosspw1234")
+            .unwrap()
+            .is_some()
+    );
+    assert!(helpers::verify_instructor_login(&conn, "Boss", "different")
+        .unwrap()
+        .is_none());
     // promotes existing member without duplicate row
-    conn.execute("INSERT INTO member (name) VALUES ('Existing')", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Existing')", [])
+        .unwrap();
     helpers::ensure_admin(&conn, "Existing", "newadminpw1").unwrap();
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM member WHERE name='Existing'", [], |r| r.get(0)).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM member WHERE name='Existing'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 1);
     // empty password raises
     assert!(helpers::ensure_admin(&conn, "X", "").is_err());
@@ -480,7 +677,8 @@ fn list_instructors_password_flags() {
     helpers::set_instructor_password(&conn, alice, "secret123").unwrap();
     make_instructor(&conn, "Frank"); // no password
     let rows = helpers::list_instructors(&conn).unwrap();
-    let by_name: std::collections::HashMap<_, _> = rows.iter().map(|r| (r.name.clone(), r)).collect();
+    let by_name: std::collections::HashMap<_, _> =
+        rows.iter().map(|r| (r.name.clone(), r)).collect();
     assert_eq!(by_name["Alice"].has_password, 1);
     assert_eq!(by_name["Frank"].has_password, 0);
 }

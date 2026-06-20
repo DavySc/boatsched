@@ -20,7 +20,10 @@ pub struct Kid {
 
 impl Kid {
     pub fn new(name: impl Into<String>, level: impl Into<String>) -> Self {
-        Kid { name: name.into(), level: level.into() }
+        Kid {
+            name: name.into(),
+            level: level.into(),
+        }
     }
 }
 
@@ -110,8 +113,7 @@ pub fn validate(kids: &[Kid], cfg: &Config) -> Result<(), ValidationError> {
             cfg.boats
         )));
     }
-    let known: std::collections::HashSet<&str> =
-        cfg.levels.iter().map(String::as_str).collect();
+    let known: std::collections::HashSet<&str> = cfg.levels.iter().map(String::as_str).collect();
     let mut bad: Vec<&str> = kids
         .iter()
         .map(|k| k.level.as_str())
@@ -204,25 +206,41 @@ mod tests {
     // ---- Config.days (mirrors TestConfigDays) ----
     #[test]
     fn days_restricted_before_diverse() {
-        let cfg = Config { restricted: svec(&["Sat", "Sun"]), diverse: svec(&["Fri"]), ..Default::default() };
+        let cfg = Config {
+            restricted: svec(&["Sat", "Sun"]),
+            diverse: svec(&["Fri"]),
+            ..Default::default()
+        };
         assert_eq!(cfg.days(), svec(&["Sat", "Sun", "Fri"]));
     }
 
     #[test]
     fn days_only_restricted() {
-        let cfg = Config { restricted: svec(&["Sat"]), diverse: vec![], ..Default::default() };
+        let cfg = Config {
+            restricted: svec(&["Sat"]),
+            diverse: vec![],
+            ..Default::default()
+        };
         assert_eq!(cfg.days(), svec(&["Sat"]));
     }
 
     #[test]
     fn days_only_diverse() {
-        let cfg = Config { restricted: vec![], diverse: svec(&["Fri"]), ..Default::default() };
+        let cfg = Config {
+            restricted: vec![],
+            diverse: svec(&["Fri"]),
+            ..Default::default()
+        };
         assert_eq!(cfg.days(), svec(&["Fri"]));
     }
 
     #[test]
     fn days_empty_both() {
-        let cfg = Config { restricted: vec![], diverse: vec![], ..Default::default() };
+        let cfg = Config {
+            restricted: vec![],
+            diverse: vec![],
+            ..Default::default()
+        };
         assert!(cfg.days().is_empty());
     }
 
@@ -230,7 +248,13 @@ mod tests {
     #[test]
     fn validate_no_days_raises() {
         let kids = kids_from_counts(&[("k", 2)]);
-        let cfg = Config { boats: 1, levels: svec(&["k"]), restricted: vec![], diverse: vec![], ..Default::default() };
+        let cfg = Config {
+            boats: 1,
+            levels: svec(&["k"]),
+            restricted: vec![],
+            diverse: vec![],
+            ..Default::default()
+        };
         let err = validate(&kids, &cfg).unwrap_err();
         assert!(err.0.contains("day"), "msg: {}", err.0);
     }
@@ -238,7 +262,11 @@ mod tests {
     #[test]
     fn validate_boats_zero_raises() {
         let kids = kids_from_counts(&[("k", 2)]);
-        let cfg = Config { boats: 0, levels: svec(&["k"]), ..Default::default() };
+        let cfg = Config {
+            boats: 0,
+            levels: svec(&["k"]),
+            ..Default::default()
+        };
         let err = validate(&kids, &cfg).unwrap_err();
         assert!(err.0.contains("positive"), "msg: {}", err.0);
     }
@@ -246,21 +274,33 @@ mod tests {
     #[test]
     fn validate_boats_negative_raises() {
         let kids = kids_from_counts(&[("k", 2)]);
-        let cfg = Config { boats: -1, levels: svec(&["k"]), ..Default::default() };
+        let cfg = Config {
+            boats: -1,
+            levels: svec(&["k"]),
+            ..Default::default()
+        };
         assert!(validate(&kids, &cfg).is_err());
     }
 
     #[test]
     fn validate_indivisible_raises() {
         let kids = kids_from_counts(&[("k", 5)]);
-        let cfg = Config { boats: 2, levels: svec(&["k"]), ..Default::default() };
+        let cfg = Config {
+            boats: 2,
+            levels: svec(&["k"]),
+            ..Default::default()
+        };
         assert!(validate(&kids, &cfg).is_err());
     }
 
     #[test]
     fn validate_unknown_level_raises() {
         let kids = vec![Kid::new("A", "z")];
-        let cfg = Config { boats: 1, levels: svec(&["k"]), ..Default::default() };
+        let cfg = Config {
+            boats: 1,
+            levels: svec(&["k"]),
+            ..Default::default()
+        };
         let err = validate(&kids, &cfg).unwrap_err();
         assert!(err.0.contains("unknown"), "msg: {}", err.0);
     }
@@ -268,7 +308,11 @@ mod tests {
     #[test]
     fn validate_valid_passes() {
         let kids = kids_from_counts(&[("k", 4), ("b", 4)]);
-        let cfg = Config { boats: 4, levels: svec(&["k", "b"]), ..Default::default() };
+        let cfg = Config {
+            boats: 4,
+            levels: svec(&["k", "b"]),
+            ..Default::default()
+        };
         assert!(validate(&kids, &cfg).is_ok());
     }
 

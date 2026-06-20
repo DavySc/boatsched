@@ -142,11 +142,18 @@ pub fn seed_members(conn: &Connection, names: &[&str]) -> Result<SeedResult> {
     };
     if clean.is_empty() {
         let total = count_all(conn)?;
-        return Ok(SeedResult { created: 0, existing: 0, total });
+        return Ok(SeedResult {
+            created: 0,
+            existing: 0,
+            total,
+        });
     }
     let before = count_all(conn)?;
     for n in &clean {
-        conn.execute("INSERT OR IGNORE INTO member (name) VALUES (?1)", params![n])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO member (name) VALUES (?1)",
+            params![n],
+        )?;
     }
     let after = count_all(conn)?;
     let created = after - before;
@@ -161,7 +168,12 @@ pub fn seed_members(conn: &Connection, names: &[&str]) -> Result<SeedResult> {
 pub fn list_members(conn: &Connection) -> Result<Vec<Member>> {
     let mut stmt = conn.prepare("SELECT id, name FROM member WHERE active=1 ORDER BY name")?;
     let rows = stmt
-        .query_map([], |r| Ok(Member { id: r.get(0)?, name: r.get(1)? }))?
+        .query_map([], |r| {
+            Ok(Member {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -193,9 +205,14 @@ pub fn rename_member(conn: &Connection, member_id: i64, name: &str) -> Result<()
     if name.is_empty() {
         return Err(DbError::Value("name must not be empty".into()));
     }
-    match conn.execute("UPDATE member SET name=?1 WHERE id=?2", params![name, member_id]) {
+    match conn.execute(
+        "UPDATE member SET name=?1 WHERE id=?2",
+        params![name, member_id],
+    ) {
         Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
             Err(DbError::Value(format!("naam '{name}' bestaat al")))
         }
         Err(e) => Err(e.into()),
@@ -203,7 +220,12 @@ pub fn rename_member(conn: &Connection, member_id: i64, name: &str) -> Result<()
 }
 
 /// Upsert a single enrollment row. Mirrors `add_enrollment`.
-pub fn add_enrollment(conn: &Connection, member_id: i64, season_id: i64, level: &str) -> Result<()> {
+pub fn add_enrollment(
+    conn: &Connection,
+    member_id: i64,
+    season_id: i64,
+    level: &str,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO enrollment (member_id, season_id, level) VALUES (?1, ?2, ?3) \
          ON CONFLICT(member_id, season_id) DO UPDATE SET level = excluded.level",
@@ -228,7 +250,12 @@ pub fn get_season_roster(conn: &Connection, season_id: i64) -> Result<Vec<(Strin
 
 /// Update the level of an *existing* enrollment row only. Returns whether a
 /// row was updated. Mirrors `set_enrollment_level`.
-pub fn set_enrollment_level(conn: &Connection, member_id: i64, season_id: i64, level: &str) -> Result<bool> {
+pub fn set_enrollment_level(
+    conn: &Connection,
+    member_id: i64,
+    season_id: i64,
+    level: &str,
+) -> Result<bool> {
     let n = conn.execute(
         "UPDATE enrollment SET level = ?1 WHERE member_id = ?2 AND season_id = ?3",
         params![level, member_id, season_id],
@@ -281,7 +308,12 @@ pub fn create_season(conn: &Connection, year: i64) -> Result<i64> {
 pub fn list_seasons(conn: &Connection) -> Result<Vec<Season>> {
     let mut stmt = conn.prepare("SELECT id, year FROM season ORDER BY year DESC")?;
     let rows = stmt
-        .query_map([], |r| Ok(Season { id: r.get(0)?, year: r.get(1)? }))?
+        .query_map([], |r| {
+            Ok(Season {
+                id: r.get(0)?,
+                year: r.get(1)?,
+            })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -327,7 +359,11 @@ pub fn list_schedules(conn: &Connection, season_id: i64) -> Result<Vec<ScheduleM
     )?;
     let rows = stmt
         .query_map(params![season_id], |r| {
-            Ok(ScheduleMeta { id: r.get(0)?, created: r.get(1)?, start_date: r.get(2)? })
+            Ok(ScheduleMeta {
+                id: r.get(0)?,
+                created: r.get(1)?,
+                start_date: r.get(2)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
@@ -349,7 +385,12 @@ pub fn get_schedule(conn: &Connection, schedule_id: i64) -> Result<Vec<ScheduleR
     let rows = stmt
         .query_map(params![schedule_id], |r| {
             let level: Option<String> = r.get(3)?;
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, level))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                level,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -368,7 +409,9 @@ pub fn get_schedule(conn: &Connection, schedule_id: i64) -> Result<Vec<ScheduleR
             .optional()?;
         missing.sort();
         missing.dedup();
-        let season = season_id.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into());
+        let season = season_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".into());
         return Err(DbError::Runtime(format!(
             "members not enrolled in season {season}: {}",
             missing.join(", ")
@@ -409,13 +452,23 @@ pub fn swap_assignment(
     let (row_a, row_b) = (row_of(name_a)?, row_of(name_b)?);
     let (row_a, row_b) = match (row_a, row_b) {
         (Some(a), Some(b)) => (a, b),
-        _ => return Err(DbError::Runtime("member not found in schedule for that day".into())),
+        _ => {
+            return Err(DbError::Runtime(
+                "member not found in schedule for that day".into(),
+            ))
+        }
     };
     if row_a.1 == row_b.1 {
         return Ok(());
     }
-    conn.execute("UPDATE boat_assignment SET boat_id=?1 WHERE id=?2", params![row_b.1, row_a.0])?;
-    conn.execute("UPDATE boat_assignment SET boat_id=?1 WHERE id=?2", params![row_a.1, row_b.0])?;
+    conn.execute(
+        "UPDATE boat_assignment SET boat_id=?1 WHERE id=?2",
+        params![row_b.1, row_a.0],
+    )?;
+    conn.execute(
+        "UPDATE boat_assignment SET boat_id=?1 WHERE id=?2",
+        params![row_a.1, row_b.0],
+    )?;
     Ok(())
 }
 
@@ -427,7 +480,12 @@ pub fn swap_assignment(
 pub fn list_boats(conn: &Connection) -> Result<Vec<Boat>> {
     let mut stmt = conn.prepare("SELECT boat_id AS id, name FROM boat ORDER BY boat_id")?;
     let rows = stmt
-        .query_map([], |r| Ok(Boat { id: r.get(0)?, name: r.get(1)? }))?
+        .query_map([], |r| {
+            Ok(Boat {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -438,7 +496,10 @@ pub fn rename_boat(conn: &Connection, boat_id: i64, name: Option<&str>) -> Resul
         Some(s) if !s.is_empty() => Some(s),
         _ => None,
     };
-    conn.execute("UPDATE boat SET name=?1 WHERE boat_id=?2", params![value, boat_id])?;
+    conn.execute(
+        "UPDATE boat SET name=?1 WHERE boat_id=?2",
+        params![value, boat_id],
+    )?;
     Ok(())
 }
 
@@ -470,7 +531,11 @@ pub fn set_instructor_password(conn: &Connection, member_id: i64, password: &str
 
 /// Verify a login by NOCASE name. Returns the member id on success. Mirrors
 /// `verify_instructor_login` (constant-time compare).
-pub fn verify_instructor_login(conn: &Connection, name: &str, password: &str) -> Result<Option<i64>> {
+pub fn verify_instructor_login(
+    conn: &Connection,
+    name: &str,
+    password: &str,
+) -> Result<Option<i64>> {
     let row: Option<(i64, Vec<u8>, Vec<u8>)> = conn
         .query_row(
             "SELECT i.member_id, i.password_hash, i.password_salt \
@@ -528,7 +593,9 @@ pub fn set_admin(conn: &Connection, member_id: i64, is_admin: bool) -> Result<()
 pub fn ensure_admin(conn: &Connection, name: &str, password: &str) -> Result<bool> {
     let name = name.trim();
     if name.is_empty() || password.is_empty() {
-        return Err(DbError::Value("admin name and password are required".into()));
+        return Err(DbError::Value(
+            "admin name and password are required".into(),
+        ));
     }
     let member_id: i64 = match conn
         .query_row(
@@ -611,7 +678,11 @@ pub fn get_schedule_start_date(conn: &Connection, schedule_id: i64) -> Result<Op
 }
 
 /// Mirrors `set_schedule_start_date`.
-pub fn set_schedule_start_date(conn: &Connection, schedule_id: i64, date_str: Option<&str>) -> Result<()> {
+pub fn set_schedule_start_date(
+    conn: &Connection,
+    schedule_id: i64,
+    date_str: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "UPDATE schedule SET start_date=?1 WHERE id=?2",
         params![date_str, schedule_id],
@@ -628,7 +699,10 @@ pub fn replace_assignments(
     assignments: &[(String, String, i64)],
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM boat_assignment WHERE schedule_id=?1", params![schedule_id])?;
+    tx.execute(
+        "DELETE FROM boat_assignment WHERE schedule_id=?1",
+        params![schedule_id],
+    )?;
     for (name, day, boat_id) in assignments {
         let member_id: Option<i64> = tx
             .query_row(
