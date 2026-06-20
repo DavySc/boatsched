@@ -847,3 +847,95 @@ async fn solve_rejects_bad_roster() {
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 }
+
+// ---- skill catalog + student progress (eval cards) ----------------------
+
+/// A db with season 1 + an enrolled non-instructor student "Kid" (member 1).
+fn app_with_student() -> Router {
+    let conn = mem_conn();
+    conn.execute("INSERT INTO season (year) VALUES (2026)", []).unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Kid')", []).unwrap();
+    conn.execute(
+        "INSERT INTO enrollment (member_id, season_id, level) VALUES (1, 1, 'k')",
+        [],
+    )
+    .unwrap();
+    create_app(Config::default(), Some(conn), ServerOptions::default())
+}
+
+#[tokio::test]
+async fn skills_catalog_shape() {
+    let app = app_with_student();
+    let admin = bootstrap_admin(&app).await;
+    let r = send(&app, "GET", "/api/skills", Some(&admin), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let j = r.json();
+    let k = &j["levels"]["k"];
+    assert!(k.is_array() && !k.as_array().unwrap().is_empty(), "level k present");
+    let cat0 = &k[0];
+    assert!(cat0["category"].is_string());
+    assert!(cat0["eval_type"].is_string());
+    assert!(cat0["skills"][0]["id"].is_i64());
+}
+
+#[tokio::test]
+async fn nonadmin_instructor_can_save_and_read_progress() {
+    let app = app_with_student();
+    let admin = bootstrap_admin(&app).await;          // member 2 (instructor/admin)
+    create_nonadmin(&app, &admin, "Bob", "bobpw").await; // member 3 (instructor)
+    let bob = login(&app, "Bob", "bobpw").await;
+
+    // A standard skill id from the catalog.
+    let skills = send(&app, "GET", "/api/skills", Some(&bob), None).await.json();
+    let skill_id = skills["levels"]["k"][0]["skills"][0]["id"].as_i64().unwrap();
+
+    // Non-admin instructor saves a card: skipper = Bob (member 3).
+    let payload = json!({
+        "member_id": 1, "season_id": 1, "notes": "goed",
+        "days": [ { "day": "Sat", "skippers": [3],
+                    "records": { skill_id.to_string(): "attempted" } } ]
+    });
+    let r = send(&app, "POST", "/api/progress", Some(&bob), Some(payload)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+
+    // ...and reads it back.
+    let got = send(&app, "GET", "/api/progress?season_id=1", Some(&bob), None)
+        .await
+        .json();
+    let arr = got["progressData"].as_array().unwrap();
+    let kid = arr.iter().find(|p| p["name"] == json!("Kid")).unwrap();
+    assert_eq!(kid["notes"], json!("goed"));
+    assert_eq!(kid["days"]["Sat"]["skippers"], json!([3]));
+    assert_eq!(
+        kid["days"]["Sat"]["records"][skill_id.to_string()],
+        json!("attempted")
+    );
+}
+
+#[tokio::test]
+async fn progress_save_rejects_invalid_payload() {
+    let app = app_with_student();
+    let admin = bootstrap_admin(&app).await;
+    // invalid weekday → 400
+    let r = send(
+        &app,
+        "POST",
+        "/api/progress",
+        Some(&admin),
+        Some(json!({
+            "member_id": 1, "season_id": 1, "notes": "",
+            "days": [ { "day": "Xyz", "skippers": [], "records": {} } ]
+        })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text());
+}
+
+#[tokio::test]
+async fn progress_requires_auth() {
+    let app = app_with_student();
+    // Auth mode on once the admin has a password; no cookie → 401.
+    let _admin = bootstrap_admin(&app).await;
+    let r = send(&app, "GET", "/api/progress?season_id=1", None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}

@@ -212,6 +212,75 @@ pub fn add_enrollment_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// Create the evaluation tables and seed the skill catalog (idempotent).
+///
+/// These are *new* tables, not part of the frozen `_create_tables` DDL. They
+/// supersede the unused, never-seeded `skill`/`skill_result`/`v_level_card`
+/// schema (left in place) with a model that matches the eval card: a
+/// `(student × day × skill)` grid, per-day skipper instructor(s), and per-student
+/// notes. Namespaced `eval_*`. The catalog is seeded once via
+/// [`crate::eval_catalog::seed_catalog`].
+pub fn add_eval_tables(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS eval_skill_category (
+            id        INTEGER PRIMARY KEY,
+            level     TEXT NOT NULL CHECK (level IN ('k','b','A','B')),
+            name      TEXT NOT NULL,
+            eval_type TEXT NOT NULL CHECK (eval_type IN ('standard','overall')),
+            ordinal   INTEGER NOT NULL,
+            UNIQUE (level, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS eval_skill (
+            id          INTEGER PRIMARY KEY,
+            category_id INTEGER NOT NULL REFERENCES eval_skill_category(id),
+            parent_id   INTEGER REFERENCES eval_skill(id),
+            label       TEXT NOT NULL,
+            ordinal     INTEGER NOT NULL,
+            retired     INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (category_id, parent_id, label)
+        );
+
+        CREATE TABLE IF NOT EXISTS eval_assessment (
+            member_id INTEGER NOT NULL,
+            season_id INTEGER NOT NULL,
+            skill_id  INTEGER NOT NULL REFERENCES eval_skill(id),
+            day       TEXT NOT NULL CHECK (day IN ('Fri','Sat','Sun','Mon','Tue','Wed')),
+            status    TEXT NOT NULL CHECK (status IN ('attempted','completed','O','T','V','G')),
+            PRIMARY KEY (member_id, season_id, skill_id, day),
+            FOREIGN KEY (member_id, season_id)
+                REFERENCES enrollment(member_id, season_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_eval_assessment_student
+            ON eval_assessment(member_id, season_id);
+
+        CREATE TABLE IF NOT EXISTS eval_skipper (
+            member_id     INTEGER NOT NULL,
+            season_id     INTEGER NOT NULL,
+            day           TEXT NOT NULL CHECK (day IN ('Fri','Sat','Sun','Mon','Tue','Wed')),
+            position      INTEGER NOT NULL CHECK (position IN (1,2)),
+            instructor_id INTEGER NOT NULL REFERENCES instructor(member_id),
+            PRIMARY KEY (member_id, season_id, day, position),
+            UNIQUE (member_id, season_id, day, instructor_id),
+            FOREIGN KEY (member_id, season_id)
+                REFERENCES enrollment(member_id, season_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS eval_note (
+            member_id INTEGER NOT NULL,
+            season_id INTEGER NOT NULL,
+            note      TEXT NOT NULL,
+            PRIMARY KEY (member_id, season_id),
+            FOREIGN KEY (member_id, season_id)
+                REFERENCES enrollment(member_id, season_id)
+        );
+        "#,
+    )?;
+    crate::eval_catalog::seed_catalog(conn)
+}
+
 /// Remove the legacy `member.level` column if present. SQLite ≥ 3.35 supports
 /// DROP COLUMN; rusqlite's bundled SQLite is recent, so the fallback no-op
 /// branch from Python is unnecessary but harmless to keep.
@@ -310,5 +379,6 @@ pub fn run_migrations(conn: &Connection) -> Result<(), MigrationError> {
     add_admin_column(conn)?;
     auto_grant_first_admin(conn)?;
     make_name_index_nocase(conn)?;
+    add_eval_tables(conn)?;
     Ok(())
 }

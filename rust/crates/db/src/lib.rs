@@ -4,6 +4,7 @@
 //! migrations. The member/season/schedule/instructor data helpers are added in
 //! stage (b).
 
+pub mod eval_catalog;
 pub mod helpers;
 pub mod schema;
 
@@ -199,5 +200,150 @@ mod tests {
         let conn = mem();
         schema::run_migrations(&conn).unwrap();
         schema::run_migrations(&conn).unwrap();
+    }
+
+    // ---- evaluation tables + progress ----------------------------------
+    use std::collections::BTreeMap;
+
+    fn mem_migrated() -> Connection {
+        let conn = init_db(":memory:").unwrap();
+        schema::run_migrations(&conn).unwrap();
+        conn
+    }
+
+    /// Seed a student (member 1), an instructor (member 2), and season 1.
+    fn seed_student_and_instructor(conn: &Connection) {
+        conn.execute("INSERT INTO member (name) VALUES ('Kid')", []).unwrap();
+        conn.execute("INSERT INTO member (name) VALUES ('Instr')", []).unwrap();
+        conn.execute("INSERT INTO season (year) VALUES (2026)", []).unwrap();
+        conn.execute("INSERT INTO instructor (member_id, is_admin) VALUES (2, 1)", []).unwrap();
+        conn.execute(
+            "INSERT INTO enrollment (member_id, season_id, level) VALUES (1, 1, 'k')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn first_skill_id(conn: &Connection, eval_type: &str) -> i64 {
+        conn.query_row(
+            "SELECT s.id FROM eval_skill s JOIN eval_skill_category c ON c.id = s.category_id \
+             WHERE c.level = 'k' AND c.eval_type = ?1 AND s.parent_id IS NULL LIMIT 1",
+            [eval_type],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn eval_catalog_seeded_and_idempotent() {
+        let conn = mem_migrated();
+        for lvl in ["k", "b", "A", "B"] {
+            let c: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM eval_skill_category WHERE level = ?1",
+                    [lvl],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(c, 4, "level {lvl} should have 4 categories");
+        }
+        let skills: i64 = conn
+            .query_row("SELECT COUNT(*) FROM eval_skill", [], |r| r.get(0))
+            .unwrap();
+        assert!(skills > 0);
+        // Re-running migrations must not duplicate the catalog.
+        schema::run_migrations(&conn).unwrap();
+        let skills2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM eval_skill", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(skills, skills2);
+    }
+
+    #[test]
+    fn save_and_get_progress_roundtrip() {
+        let conn = mem_migrated();
+        seed_student_and_instructor(&conn);
+        let skill_id = first_skill_id(&conn, "standard");
+        let p = SaveProgress {
+            member_id: 1,
+            season_id: 1,
+            notes: "goed bezig".into(),
+            days: vec![SaveDay {
+                day: "Sat".into(),
+                skippers: vec![2],
+                records: BTreeMap::from([(skill_id.to_string(), "attempted".to_string())]),
+            }],
+        };
+        save_student_progress(&conn, &p).unwrap();
+
+        let got = get_season_progress(&conn, 1).unwrap();
+        assert_eq!(got.len(), 1, "only the non-instructor student is listed");
+        let sp = &got[0];
+        assert_eq!(sp.member_id, 1);
+        assert_eq!(sp.notes, "goed bezig");
+        let day = sp.days.get("Sat").expect("Sat day present");
+        assert_eq!(day.skippers, vec![2]);
+        assert_eq!(day.records.get(&skill_id.to_string()).unwrap(), "attempted");
+
+        // Save is replace-all: clearing days + notes empties the student.
+        save_student_progress(
+            &conn,
+            &SaveProgress { member_id: 1, season_id: 1, notes: "".into(), days: vec![] },
+        )
+        .unwrap();
+        let got = get_season_progress(&conn, 1).unwrap();
+        assert!(got[0].days.is_empty() && got[0].notes.is_empty());
+    }
+
+    #[test]
+    fn save_progress_validation_rejects_bad_input() {
+        let conn = mem_migrated();
+        seed_student_and_instructor(&conn);
+        let std_skill = first_skill_id(&conn, "standard");
+        let day = |skippers, records| {
+            SaveProgress {
+                member_id: 1,
+                season_id: 1,
+                notes: String::new(),
+                days: vec![SaveDay { day: "Sat".into(), skippers, records }],
+            }
+        };
+        let bad = |r: Result<(), DbError>| assert!(matches!(r, Err(DbError::Value(_))), "{r:?}");
+
+        // invalid weekday
+        bad(save_student_progress(
+            &conn,
+            &SaveProgress {
+                member_id: 1,
+                season_id: 1,
+                notes: String::new(),
+                days: vec![SaveDay { day: "Xyz".into(), skippers: vec![], records: BTreeMap::new() }],
+            },
+        ));
+        // skipper that isn't an instructor (member 1 is the student)
+        bad(save_student_progress(&conn, &day(vec![1], BTreeMap::new())));
+        // more than two skippers
+        bad(save_student_progress(&conn, &day(vec![2, 2, 2], BTreeMap::new())));
+        // unknown skill id
+        bad(save_student_progress(
+            &conn,
+            &day(vec![], BTreeMap::from([("999999".into(), "attempted".into())])),
+        ));
+        // wrong status for a standard skill (overall code)
+        bad(save_student_progress(
+            &conn,
+            &day(vec![], BTreeMap::from([(std_skill.to_string(), "G".into())])),
+        ));
+        // member that isn't an enrolled student (the instructor)
+        bad(save_student_progress(
+            &conn,
+            &SaveProgress { member_id: 2, season_id: 1, notes: String::new(), days: vec![] },
+        ));
+
+        // nothing was written despite the failed attempts
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM eval_assessment", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }
