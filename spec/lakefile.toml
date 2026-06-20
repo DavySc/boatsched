@@ -1,0 +1,21 @@
+name = "boatsched-spec"
+version = "0.1.0"
+defaultTargets = ["BoatschedSpec"]
+
+# Formal domain model of boatsched, backing the Rust implementation under
+# ../rust. See README.md for the architecture and the Rust conformance bridge.
+# Mathlib is available for proofs (run `lake exe cache get` once to fetch the
+# prebuilt oleans; the cold dev loop is heavier but proofs are far cleaner).
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "v4.31.0"
+
+[[lean_lib]]
+name = "BoatschedSpec"
+
+# `lake exe gen-vectors > conformance_vectors.json` regenerates the Rust bridge.
+[[lean_exe]]
+name = "gen-vectors"
+root = "GenVectors"
