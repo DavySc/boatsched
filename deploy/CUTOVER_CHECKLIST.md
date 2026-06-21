@@ -33,32 +33,18 @@ committing these files** — included here only so you know what changed.
 
 ---
 
-## 0b. RUNTIME requirement — data dir must be writable by uid 10001 ⚠️
+## 0b. RUNTIME — container runs as the deploy user (handled in compose) ✓
 
-The image runs as the non-root user `boatsched` (**uid 10001**). The bind-mounted
-data dir must be owned/writable by that uid, or the container **crashes on boot**:
+The image's built-in user is uid 10001, but the bind-mounted DB dir
+(`/var/lib/boatsched`) is owned by `deploy`. Rather than chown the data dir, both
+compose files set `user: "1000:1000"` so the container runs **as the deploy user**
+that already owns the dir — the live DB is used as-is (no chown, files stay
+deploy-owned). The app only writes to `/data`, so this is sufficient.
 
-```
-[error] could not open database /data/boatsched.db: unable to open database file
-```
-
-The README's `install -d -o deploy -g deploy /var/lib/boatsched` makes the dir
-owned by `deploy` (a different uid) → the container can't write. **On the box:**
-
-```bash
-sudo chown -R 10001:10001 /var/lib/boatsched /var/lib/boatsched-validate
-```
-
-When migrating from Python, also chown the **existing** DB files (contents are
-reused unchanged, but ownership must move to 10001):
-
-```bash
-sudo chown 10001:10001 /var/lib/boatsched/boatsched.db*
-```
-
-(Alternative: add `user: "<deploy-uid>:<deploy-gid>"` to both compose files so the
-container runs as the dir's owner — but the deterministic `chown` to 10001 matches
-the image's fixed uid and is simpler.)
+**Action: confirm the deploy user's uid:gid is `1000:1000`** (`id deploy`). If it
+differs, update the `user:` line in `docker-compose.yml` **and**
+`docker-compose.validate.yml`. (Verified locally: running as a non-10001 uid
+against a non-chowned dir boots healthy and logs in fine.)
 
 ---
 
@@ -95,9 +81,9 @@ origin main`. The work is currently on `rust-rewrite`.
 - [ ] `useradd --create-home --shell /bin/bash deploy` ; `usermod -aG docker deploy`
 - [ ] `git clone …/boatsched.git /opt/boatsched` (owned by `deploy`)
 - [ ] `sudo -u deploy docker login codeberg.org` (registry pull; needs `read:package`)
-- [ ] `install -d /var/lib/boatsched /var/lib/boatsched-validate` then
-      `chown -R 10001:10001 /var/lib/boatsched /var/lib/boatsched-validate`
-      (the container runs as uid 10001 — see §0b; do NOT leave it owned by `deploy`)
+- [ ] `install -d -o deploy -g deploy /var/lib/boatsched /var/lib/boatsched-validate`
+      (the container runs as the deploy user via compose `user:` — see §0b; confirm
+      `id deploy` is `1000:1000`, else edit the `user:` line in both compose files)
 - [ ] Create `/etc/boatsched/env` (root:deploy, **chmod 640**):
       `BOATSCHED_ADMIN`, `BOATSCHED_ADMIN_PW` (≥8 chars), `SOLVER_WORKERS=2`
 - [ ] Install the unit: `cp deploy/boatsched-docker.service /etc/systemd/system/` ;
@@ -151,7 +137,8 @@ origin main`. The work is currently on `rust-rewrite`.
 - **Container runtime smoke test** (mirrors the `:8001` validation): boots healthy,
   `/api/health` 200, `GET /` serves the embedded SPA, admin login 200 / bad-pw 401
   (DB read + scrypt), `/api/skills` returns the DB-seeded catalog (migrations ran).
-- Found + recorded the uid-10001 data-dir permission requirement (§0b).
+- Confirmed the container runs fine as a non-10001 uid (the `user:` approach in
+  §0b) against a data dir not owned by 10001.
 
 **NOT testable off the box (verify there):**
 - `systemctl` handover and the auto-rollback paths (Python / previous image).

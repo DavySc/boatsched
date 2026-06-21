@@ -22,6 +22,10 @@ services:
     container_name: boatsched-validate
     restart: "no"
 
+    # Match docker-compose.yml: run as the deploy user (uid:gid 1000:1000) so the
+    # validation DB copy dir (owned by deploy) is writable without a chown.
+    user: "1000:1000"
+
     ports:
       - "127.0.0.1:8001:8000"
 
