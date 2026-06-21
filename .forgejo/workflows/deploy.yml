@@ -1,60 +1,30 @@
-name: CI/CD
+name: CD
 
-# Build + test the Rust image on every push to main; deploy only if it builds.
+# Deploy on every push to main, using a Codeberg SHARED runner (codeberg-small).
+#
+# Codeberg's shared runners can't build OCI images (no privileged Docker on the
+# shared infra), so this workflow does NOT build/push an image. It only SSHes to
+# the box and runs deploy.sh, which builds the image ON THE BOX
+# (BUILD_ON_HOST=1 in /etc/boatsched/env) and then does the never-break-prod
+# cutover. The multi-stage build still runs `cargo test` as the gate — on the box
+# at build time — so a failing test fails the deploy.
+#
+# (A registry-based build job — `docker build` + push from CI — only works on a
+# runner that can build images, e.g. a self-hosted one. See git history /
+# deploy/README.md if you ever move to that model.)
 on:
   push:
     branches: [main]
 
-env:
-  # Codeberg container registry. The image is self-contained (Rust binary +
-  # OR-Tools native libs), so the production host only needs Docker.
-  REGISTRY: codeberg.org
-  IMAGE: codeberg.org/oventosti/boatsched
-
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    # The multi-stage build compiles the workspace, downloads the OR-Tools SDK,
-    # and runs `cargo test` as the gate — give it room on slow shared runners.
-    # NOTE: this runner must be able to build OCI images (a usable Docker socket
-    # or buildx). If it can't, drop this `build` job and set BUILD_ON_HOST=1 for
-    # deploy.sh (build-on-host fallback) — see deploy/README.md.
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # NOTE: this job needs a runner that can build OCI images (Docker socket /
-      # buildx). `runs-on: docker` assumes such a runner is registered. If the
-      # shared runner cannot build images, remove this whole `build` job and set
-      # BUILD_ON_HOST=1 for deploy.sh (build-on-host fallback) — see deploy/README.md.
-      - name: Log in to the container registry
-        run: |
-          echo "${{ secrets.REGISTRY_TOKEN }}" \
-            | docker login "$REGISTRY" -u "${{ secrets.REGISTRY_USER }}" --password-stdin
-
-      - name: Build image (compiles + runs cargo test in the builder stage)
-        run: |
-          docker build \
-            -t "$IMAGE:${{ github.sha }}" \
-            -t "$IMAGE:latest" \
-            -f rust/Dockerfile .
-
-      - name: Push image
-        run: |
-          docker push "$IMAGE:${{ github.sha }}"
-          docker push "$IMAGE:latest"
-
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
+    runs-on: codeberg-small
     container:
       image: ghcr.io/catthehacker/ubuntu:act-latest
     # Redundant guard (the trigger is already main-only): never deploy off main.
     if: ${{ github.ref == 'refs/heads/main' }}
     steps:
       # ssh client + git are already present in the image; no install needed.
-      # The box pulls the image we just pushed and runs the gated cutover.
       - name: Deploy over SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -72,8 +42,8 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KEY_DIR/known_hosts"
 
           # Host key is pinned via known_hosts — StrictHostKeyChecking stays on.
-          # deploy.sh: backup → pull → validate-on-copy → handover → health-gate
-          # → auto-rollback. It never leaves prod broken.
+          # deploy.sh: pull → backup → build-on-host → validate-on-copy → handover
+          # → health-gate → auto-rollback. It never leaves prod broken.
           ssh -i "$KEY_DIR/id_deploy" \
               -o IdentitiesOnly=yes \
               -o UserKnownHostsFile="$KEY_DIR/known_hosts" \

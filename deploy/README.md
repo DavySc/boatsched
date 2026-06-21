@@ -1,11 +1,17 @@
 # Deployment — boatsched (Rust) on a Hetzner box
 
-CI/CD: push to `main` on Codeberg (`Oventosti/boatsched`) → Forgejo Actions
-**builds + tests** the Docker image (the multi-stage build runs `cargo test` as
-the gate) and **pushes** it to the Codeberg container registry, then SSHes to the
-box and runs `deploy/deploy.sh`. The app runs as a **single Docker container**
-(managed by `boatsched-docker.service`), bound to `127.0.0.1:8000`, behind
-nginx + certbot (TLS terminated by nginx).
+CD: push to `main` on Codeberg (`Oventosti/boatsched`) → a Forgejo Actions
+**shared runner** (`codeberg-small`) SSHes to the box and runs `deploy/deploy.sh`,
+which **builds the image on the box** (`BUILD_ON_HOST=1`) and does the
+never-break-prod cutover. The multi-stage build runs `cargo test` as the gate (on
+the box, at build time), so a failing test fails the deploy. The app runs as a
+**single Docker container** (managed by `boatsched-docker.service`), bound to
+`127.0.0.1:8000`, behind nginx + certbot (TLS terminated by nginx).
+
+> **Why build on the box (no registry):** Codeberg's shared runners can't build
+> OCI images (no privileged Docker on shared infra), and Codeberg doesn't accept
+> user self-hosted runners. So CI only orchestrates the SSH; the box builds. This
+> drops the registry entirely (no `REGISTRY_*` secrets, no `docker login`).
 
 > **The cutover never breaks prod.** Every deploy backs up the DB, validates the
 > new image against a *copy* of the production database on a side port, and only
@@ -58,10 +64,10 @@ no schema change, no forced re-login of stored credentials.**
 
 ## CI secrets (Forgejo repo → Settings → Actions → Secrets)
 
+Only SSH is needed (no registry — the box builds):
+
 | Secret | Contents |
 |---|---|
-| `REGISTRY_USER` | Codeberg username (or a bot) with package write access. |
-| `REGISTRY_TOKEN` | Codeberg access token with `write:package` scope. |
 | `SSH_PRIVATE_KEY` | Private half of the deploy keypair (full PEM). |
 | `SSH_HOST` | Box hostname or public IP. |
 | `SSH_USER` | `deploy` |
@@ -71,19 +77,28 @@ no schema change, no forced re-login of stored credentials.**
 
 ## CI runner notes
 
-`.forgejo/workflows/deploy.yml` has two jobs:
+`.forgejo/workflows/deploy.yml` is a **single `deploy` job** on Codeberg's shared
+runner (`runs-on: codeberg-small`). It only SSHes to the box and runs
+`deploy/deploy.sh`; it does **not** build or push an image. The box builds the
+image itself because `BUILD_ON_HOST=1` is set in `/etc/boatsched/env`.
 
-- **`build`** (`runs-on: docker`) — needs a runner that can **build OCI images**
-  (Docker socket / buildx). It `docker build`s `rust/` and pushes
-  `codeberg.org/oventosti/boatsched:{latest,<sha>}`.
-- **`deploy`** — SSHes to the box and runs `deploy/deploy.sh`.
+This is deliberate:
 
-> **If your Forgejo runner cannot build images:** drop the `build` job and deploy
-> with the **build-on-host fallback** — set `BUILD_ON_HOST=1` for `deploy.sh`
-> (e.g. in `/etc/boatsched/env`), which runs `docker compose build` on the box
-> instead of pulling. This compiles on the box (CPU/RAM contention during the
-> build, but it does **not** disturb the still-running service — the new image is
-> only swapped in after it validates).
+- Codeberg's **shared runners can't build OCI images** (no privileged Docker), and
+- Codeberg does **not** accept user **self-hosted** runners (registration is
+  refused — `runner registration token not found`), so a build-on-CI job has
+  nowhere to run.
+
+Building on the box compiles during the deploy (CPU/RAM contention for a few
+minutes) but does **not** disturb the running service — the new image is only
+swapped in after it validates on `:8001`.
+
+> **Want build-on-CI later?** If you move to a self-hosted Forgejo instance with a
+> runner that can build images, restore the registry `build` job (in git history)
+> and unset `BUILD_ON_HOST`. Not possible on `codeberg.org`.
+
+> **Fully manual** (no CI at all) also works: `sudo -u deploy bash
+> /opt/boatsched/deploy/deploy.sh` on the box.
 
 ---
 
@@ -135,11 +150,11 @@ install -d -o deploy -g deploy /opt/boatsched
 sudo -u deploy git clone https://codeberg.org/Oventosti/boatsched.git /opt/boatsched
 ```
 
-### 4. Log in to the registry (as the `deploy` user)
+### 4. (Registry login — not needed)
 
-```bash
-sudo -u deploy docker login codeberg.org   # use a token with read:package
-```
+The box **builds** the image (`BUILD_ON_HOST=1`, see step 6), so there is no
+registry pull and no `docker login`. Skip this. (Only needed if you switch to a
+registry-based build on a self-hosted CI runner.)
 
 ### 5. DB directory (local NVMe, owned by deploy)
 
@@ -165,6 +180,9 @@ BOATSCHED_ADMIN_PW=use-a-long-random-password
 
 # CP-SAT search workers (forwarded into --workers by the container entrypoint).
 SOLVER_WORKERS=2
+
+# Build the image ON THE BOX during deploy (Codeberg CI can't build images).
+BUILD_ON_HOST=1
 
 # require_auth + secure_cookies auto-enable because the server runs with --db.
 EOF
@@ -234,12 +252,12 @@ the safe, never-break-prod handover:
 ## Deploy flow (automatic)
 
 1. Push to `main` on Codeberg.
-2. **build** job: `docker build rust/` (compiles + `cargo test` gate) → push
-   `:latest` and `:<sha>` to the registry.
-3. **deploy** job: SSHes as `deploy` and runs `deploy/deploy.sh`, which:
+2. **deploy** job (shared runner `codeberg-small`): SSHes as `deploy` and runs
+   `deploy/deploy.sh`, which:
    - `git pull --ff-only` (compose/unit/script updates),
    - backs up the live DB (`sqlite3 .backup`),
-   - `docker compose pull` (or `build` if `BUILD_ON_HOST=1`),
+   - `docker compose build` on the box (`BUILD_ON_HOST=1`) — compiles + runs the
+     `cargo test` gate; a failing test fails the deploy here,
    - **validates** the image on `:8001` against a DB **copy** (health, `GET /`,
      and an admin login that exercises DB read + scrypt) — aborts here, prod
      untouched, if anything fails,

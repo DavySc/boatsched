@@ -71,11 +71,9 @@ None of this touches the running Python service or its DB. Run on the box.
       (brings in `docker-compose.yml`, the unit, `deploy.sh`).
 - [ ] Create the validation DB dir (owned by deploy):
       `sudo install -d -o deploy -g deploy /var/lib/boatsched-validate`
-- [ ] Pulling the image (pick one):
-      - **Registry (default):** `sudo -u deploy docker login codeberg.org` (token with
-        `read:package`).
-      - **Build on the box (no registry):** set `BUILD_ON_HOST=1` in
-        `/etc/boatsched/env` so `deploy.sh` runs `docker compose build` instead.
+- [ ] **Build on the box** — add `BUILD_ON_HOST=1` to `/etc/boatsched/env` so
+      `deploy.sh` runs `docker compose build` locally. (Codeberg CI can't build
+      images, so this is the method — no registry, no `docker login`.)
 - [ ] Install the container unit, **but do NOT enable/start it** (the cutover does
       the handover):
       ```bash
@@ -93,31 +91,31 @@ None of this touches the running Python service or its DB. Run on the box.
 
 ## Step 3 — (Only if deploying via CI) Forgejo secrets
 
-Skip this if you'll run `deploy.sh` by hand (Step 4, option B).
+The CI is a single `deploy` job on Codeberg's shared runner (`codeberg-small`)
+that just SSHes in and runs `deploy.sh` — no registry, so **only SSH secrets**.
+Skip this entirely if you'll run `deploy.sh` by hand (Step 4, option B).
 
-- [ ] `REGISTRY_USER`, `REGISTRY_TOKEN` (`write:package`), `SSH_PRIVATE_KEY`,
-      `SSH_HOST`, `SSH_USER=deploy`, `SSH_KNOWN_HOSTS` (from `ssh-keyscan`).
+- [ ] `SSH_PRIVATE_KEY`, `SSH_HOST`, `SSH_USER=deploy`, `SSH_KNOWN_HOSTS`
+      (from `ssh-keyscan`).
 - [ ] Authorize the CI deploy **public** key in `~deploy/.ssh/authorized_keys`.
-- [ ] Confirm the registry path/casing (`codeberg.org/oventosti/boatsched`) matches
-      the real package.
 
 ---
 
 ## Step 4 — Run the cutover
 
-`deploy.sh` is **never-break-prod**: backup live DB → pull/build image → validate
-it on `:8001` against a **copy** of the live DB (health + `GET /` + admin login) →
-stop Python (releases the DB) → start the container on `:8000` → health-gate, with
-**automatic rollback to Python** on any failure.
+`deploy.sh` is **never-break-prod**: backup live DB → build image on the box →
+validate it on `:8001` against a **copy** of the live DB (health + `GET /` + admin
+login) → stop Python (releases the DB) → start the container on `:8000` →
+health-gate, with **automatic rollback to Python** on any failure.
 
 Pick one:
 
-- **A — via CI:** push to `main`. The build job builds+tests+pushes the image; the
-  deploy job SSHes in and runs `deploy.sh`.
-- **B — manually on the box:**
+- **A — via CI:** push to `main`. The `codeberg-small` runner SSHes in and runs
+  `deploy.sh` (which builds on the box).
+- **B — manually on the box** (no runner needed):
   ```bash
   sudo -u deploy bash /opt/boatsched/deploy/deploy.sh
-  # (BUILD_ON_HOST=1 already in the env file if you're not using the registry)
+  # (BUILD_ON_HOST=1 must be in /etc/boatsched/env — Step 2)
   ```
 
 - [ ] Watch the log: it must print `validation PASSED` then `Rust service healthy
