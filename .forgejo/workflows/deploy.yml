@@ -35,7 +35,7 @@ jobs:
           docker build \
             -t "$IMAGE:${{ github.sha }}" \
             -t "$IMAGE:latest" \
-            rust/
+            -f rust/Dockerfile .
 
       - name: Push image
         run: |

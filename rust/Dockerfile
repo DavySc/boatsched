@@ -9,8 +9,9 @@
 # the binary links against at build time is exactly what runs it. The SDK build
 # we download MUST match that base — hence the ubuntu-24.04 OR-Tools artifact.
 #
-# Build context is the `rust/` directory (see .dockerignore). Build from there:
-#   docker build -t boatsched:latest rust/
+# Build context is the REPO ROOT (the server crate embeds the shared SPA from
+# src/boatsched/viewer.html, which lives outside rust/). Build from the repo root:
+#   docker build -t boatsched:latest -f rust/Dockerfile .
 #
 # Pin is intentional: OR-Tools 9.15.6755 matches crates/solver (protobuf ABI).
 
@@ -49,18 +50,24 @@ ENV ORTOOLS_ROOT=/opt/or-tools
 
 # Rust toolchain — channel/version come from rust-toolchain.toml (copied first so
 # rustup installs the pinned toolchain before the heavier dependency build).
-COPY rust-toolchain.toml ./rust-toolchain.toml
+COPY rust/rust-toolchain.toml ./rust-toolchain.toml
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --default-toolchain none \
     && rustup show
 
+# Build context is the REPO ROOT (not rust/): the server crate embeds the shared
+# SPA via include_str!("../../../../src/boatsched/viewer.html"), which lives
+# OUTSIDE rust/. We mirror the repo layout in the image — workspace at /build/rust,
+# viewer at /build/src/boatsched/viewer.html — so that relative path resolves.
+# (.dockerignore keeps target/ and vendor/ out so the SDK we just fetched — not
+# the gitignored Arch one — is the only OR-Tools SDK.)
 WORKDIR /build
-# Copy the whole workspace. (.dockerignore keeps target/ and vendor/ out so the
-# SDK we just fetched — not the gitignored Arch one — is the only OR-Tools SDK.)
-COPY . .
+COPY rust/ ./rust/
+COPY src/boatsched/viewer.html ./src/boatsched/viewer.html
 
 # Compile + run the test suite as the build-time gate, then build the release
 # binary. A failing test fails the image build (and therefore the deploy).
+WORKDIR /build/rust
 RUN cargo test --release --workspace --locked \
     && cargo build --release -p boatsched-server --locked \
     && strip target/release/boatsched-server
@@ -83,7 +90,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # OR-Tools shared libs at the SAME path the build-time rpath points to.
 COPY --from=builder /opt/or-tools/lib /opt/or-tools/lib
-COPY --from=builder /build/target/release/boatsched-server /usr/local/bin/boatsched-server
+COPY --from=builder /build/rust/target/release/boatsched-server /usr/local/bin/boatsched-server
 
 # Non-root runtime user owns the data dir (bind-mounted at run time).
 RUN useradd --system --uid 10001 --home /app boatsched \
@@ -93,7 +100,7 @@ RUN useradd --system --uid 10001 --home /app boatsched \
 # Entrypoint wrapper: forwards SOLVER_WORKERS (from the env file) into the
 # solver's --workers flag, defaulting to 2 to match the box's vCPU budget. The
 # hardening flags (require_auth, secure cookies) auto-enable because --db is set.
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY rust/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER boatsched

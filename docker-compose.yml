@@ -15,8 +15,11 @@ services:
     # Registry image by default; `docker compose build` also works (build-on-host
     # fallback) because the build context is declared too.
     image: ${BOATSCHED_IMAGE:-codeberg.org/oventosti/boatsched:latest}
+    # Build context is the repo root: the image embeds src/boatsched/viewer.html
+    # (outside rust/) at compile time, so the whole repo must be in context.
     build:
-      context: ./rust
+      context: .
+      dockerfile: rust/Dockerfile
     container_name: boatsched
     restart: unless-stopped
 

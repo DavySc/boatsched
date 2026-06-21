@@ -1,0 +1,31 @@
+# Docker build context is the REPO ROOT (see rust/Dockerfile). Keep it small and
+# reproducible. The image only needs rust/ + src/boatsched/viewer.html.
+#
+# CRITICAL: rust/vendor/ is the gitignored OR-Tools SDK (a host-local Arch build
+# with the wrong ABI). Excluding it ensures the image uses ONLY the ubuntu-24.04
+# SDK fetched in the Dockerfile.
+rust/target/
+rust/vendor/
+
+# Never ship databases into the image.
+*.db
+*.db-shm
+*.db-wal
+
+# Python tooling / build artifacts — irrelevant to the Rust image.
+.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Lean build artifacts.
+spec/.lake/
+
+# VCS / editor / agent noise.
+.git/
+.gitignore
+.claude/
+**/*.swp
