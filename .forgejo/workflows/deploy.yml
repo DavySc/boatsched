@@ -13,9 +13,12 @@ env:
 
 jobs:
   build:
-    runs-on: docker
+    runs-on: ubuntu-latest
     # The multi-stage build compiles the workspace, downloads the OR-Tools SDK,
     # and runs `cargo test` as the gate — give it room on slow shared runners.
+    # NOTE: this runner must be able to build OCI images (a usable Docker socket
+    # or buildx). If it can't, drop this `build` job and set BUILD_ON_HOST=1 for
+    # deploy.sh (build-on-host fallback) — see deploy/README.md.
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -44,7 +47,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: codeberg-small
+    runs-on: ubuntu-latest
     container:
       image: ghcr.io/catthehacker/ubuntu:act-latest
     # Redundant guard (the trigger is already main-only): never deploy off main.
