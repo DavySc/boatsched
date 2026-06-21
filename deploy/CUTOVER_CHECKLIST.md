@@ -1,147 +1,167 @@
-# Manual cutover checklist — boatsched Python → Rust container
+# Cutover runbook — live Python box → Rust container
 
-Everything you must do **by hand** for the swapover to succeed, in order. The
-automated parts (CI build/push, `deploy/deploy.sh` cutover with auto-rollback)
-are covered in `deploy/README.md`; this file is only the manual prerequisites and
-the one blocker found while testing the deploy strategy locally.
+**Scenario this guide covers:** the **Python** boatsched is **already running in
+production with live data**, and you want to switch it to the Rust container with
+no data loss and no extended downtime.
 
----
-
-## 0. Build blockers — FIXED in code (verified by a clean build + run)
-
-Two build blockers were found and fixed (commit these). Both were because the
-image was built from `rust/`, but the server crate embeds the shared SPA from the
-**repo root** (`include_str!("../../../../src/boatsched/viewer.html")`), which is
-outside that context. The fix builds from the repo root instead:
-
-1. `rust/Dockerfile` — build context is now the repo root; the layout is mirrored
-   in the image (workspace at `/build/rust`, viewer at
-   `/build/src/boatsched/viewer.html`), built from `/build/rust`. Also fixed
-   `COPY docker-entrypoint.sh` → `COPY rust/docker-entrypoint.sh` (same cause).
-2. `docker-compose.yml` + `docker-compose.validate.yml` —
-   `build: { context: ., dockerfile: rust/Dockerfile }`.
-3. `.forgejo/workflows/deploy.yml` — `docker build … -f rust/Dockerfile .`.
-4. `rust/.dockerignore` moved to repo-root `.dockerignore` (context changed),
-   excluding `rust/target/`, `rust/vendor/` (the wrong-ABI Arch SDK), `.git/`,
-   `.venv/`, `*.db*`, etc.
-
-Verified locally: `docker build -f rust/Dockerfile .` builds clean, the in-image
-`cargo test` gate passes (all suites incl. the new eval tests), and the running
-container answers `/api/health` 200, serves the SPA, admin login 200 / bad-pw 401,
-and `/api/skills` returns the DB-seeded catalog. **No action needed beyond
-committing these files** — included here only so you know what changed.
+> Setting up a **clean box** from scratch is a separate concern — see
+> [`deploy/README.md` → One-time server provisioning](./README.md#one-time-server-provisioning).
+> This runbook does **not** repeat it; it only covers the delta from a
+> Python-serving box to the container.
 
 ---
 
-## 0b. RUNTIME — container runs as the deploy user (handled in compose) ✓
+## Starting state (already true because Python is live)
 
-The image's built-in user is uid 10001, but the bind-mounted DB dir
-(`/var/lib/boatsched`) is owned by `deploy`. Rather than chown the data dir, both
-compose files set `user: "1000:1000"` so the container runs **as the deploy user**
-that already owns the dir — the live DB is used as-is (no chown, files stay
-deploy-owned). The app only writes to `/data`, so this is sufficient.
+These exist and are **reused unchanged** — do not recreate them:
 
-**Action: confirm the deploy user's uid:gid is `1000:1000`** (`id deploy`). If it
-differs, update the `user:` line in `docker-compose.yml` **and**
-`docker-compose.validate.yml`. (Verified locally: running as a non-10001 uid
-against a non-chowned dir boots healthy and logs in fine.)
+- `deploy:deploy` user; repo checked out at `/opt/boatsched`.
+- Live SQLite DB at `/var/lib/boatsched/boatsched.db` (+ `-wal`/`-shm`), owned by
+  `deploy`. **This is the real data — it is reused in place, byte-for-byte.**
+- `/etc/boatsched/env` with `BOATSCHED_ADMIN`, `BOATSCHED_ADMIN_PW`,
+  `SOLVER_WORKERS` (the container reads the same file).
+- nginx + certbot terminating TLS, proxying to `127.0.0.1:8000`. **No nginx change**
+  — the container listens on the same address and speaks the same `/collab/` WS.
+- `boatsched.service` (Python) running. **Leave it running** until the handover.
 
----
-
-## 1. Get the code onto `main`
-
-The deploy triggers on **push to `main`** and `deploy.sh` does `git pull --ff-only
-origin main`. The work is currently on `rust-rewrite`.
-
-- [ ] Apply the blocker fix above.
-- [ ] Merge `rust-rewrite` → `main` (or whatever branch CI watches).
-- [ ] Confirm `main` builds the image end-to-end (CI green, or a manual `docker build`).
+The Rust DB layer uses `CREATE TABLE IF NOT EXISTS` + the same idempotent
+migrations as Python, in WAL mode, with byte-compatible scrypt hashes — so no
+schema change, no data migration, no forced re-login.
 
 ---
 
-## 2. Forgejo CI secrets (repo → Settings → Actions → Secrets)
+## Step 1 — Code is ready on `main`
 
-- [ ] `REGISTRY_USER` — Codeberg user/bot with package write
-- [ ] `REGISTRY_TOKEN` — Codeberg token, `write:package` scope
-- [ ] `SSH_PRIVATE_KEY` — full PEM of the deploy keypair
-- [ ] `SSH_HOST` — box hostname / IP
-- [ ] `SSH_USER` — `deploy`
-- [ ] `SSH_KNOWN_HOSTS` — pinned host key from `ssh-keyscan <host>`
-- [ ] Confirm the registry path/casing in the workflow + compose
-      (`codeberg.org/oventosti/boatsched`) matches the actual Codeberg package.
-- [ ] If your runner can't build OCI images, set `BUILD_ON_HOST=1` (in
-      `/etc/boatsched/env`) and drop the `build` job — see README.
+The deploy builds from `main` (CI trigger + `deploy.sh` does `git pull --ff-only
+origin main`).
+
+- [ ] The Docker build fixes are merged to `main` (build context, `user:`, etc.
+      — already committed on `rust-rewrite`; merge that branch).
+- [ ] `main` builds the image green (CI, or a local `docker build -f rust/Dockerfile .`).
+      Verified locally already: the build passes the in-image `cargo test` gate and
+      the container boots + serves + logs in.
 
 ---
 
-## 3. One-time server provisioning (run on the box as root)
+## Step 2 — One-time delta on the live box (Python stays up the whole time)
 
-- [ ] `apt install -y docker.io docker-compose-plugin git nginx sqlite3 curl`;
-      `systemctl enable --now docker`
-- [ ] `useradd --create-home --shell /bin/bash deploy` ; `usermod -aG docker deploy`
-- [ ] `git clone …/boatsched.git /opt/boatsched` (owned by `deploy`)
-- [ ] `sudo -u deploy docker login codeberg.org` (registry pull; needs `read:package`)
-- [ ] `install -d -o deploy -g deploy /var/lib/boatsched /var/lib/boatsched-validate`
-      (the container runs as the deploy user via compose `user:` — see §0b; confirm
-      `id deploy` is `1000:1000`, else edit the `user:` line in both compose files)
-- [ ] Create `/etc/boatsched/env` (root:deploy, **chmod 640**):
-      `BOATSCHED_ADMIN`, `BOATSCHED_ADMIN_PW` (≥8 chars), `SOLVER_WORKERS=2`
-- [ ] Install the unit: `cp deploy/boatsched-docker.service /etc/systemd/system/` ;
-      `systemctl daemon-reload`
-      - Fresh box: `systemctl enable --now boatsched-docker`
-      - **Cutover from Python: do NOT enable it yet** — the first `deploy.sh` run
-        does the handover.
-- [ ] Scoped sudoers `/etc/sudoers.d/boatsched-deploy` (chmod 440, `visudo -cf`)
-      allowing `deploy` to `systemctl start|stop|restart` **both** `boatsched` and
-      `boatsched-docker`. Verify the `systemctl` path with `command -v systemctl`.
+None of this touches the running Python service or its DB. Run on the box.
+
+- [ ] **Confirm the deploy uid/gid is `1000:1000`** — `id deploy`. The compose
+      files set `user: "1000:1000"` so the container runs as `deploy` and can open
+      the live deploy-owned DB. **If it differs, edit the `user:` line in
+      `docker-compose.yml` AND `docker-compose.validate.yml` to match.**
+- [ ] Install Docker + compose plugin; add `deploy` to the `docker` group:
+      ```bash
+      sudo apt install -y docker.io docker-compose-plugin
+      sudo systemctl enable --now docker
+      sudo usermod -aG docker deploy      # re-login / new shell for deploy to take effect
+      ```
+- [ ] Update the checkout: `sudo -u deploy git -C /opt/boatsched pull --ff-only origin main`
+      (brings in `docker-compose.yml`, the unit, `deploy.sh`).
+- [ ] Create the validation DB dir (owned by deploy):
+      `sudo install -d -o deploy -g deploy /var/lib/boatsched-validate`
+- [ ] Pulling the image (pick one):
+      - **Registry (default):** `sudo -u deploy docker login codeberg.org` (token with
+        `read:package`).
+      - **Build on the box (no registry):** set `BUILD_ON_HOST=1` in
+        `/etc/boatsched/env` so `deploy.sh` runs `docker compose build` instead.
+- [ ] Install the container unit, **but do NOT enable/start it** (the cutover does
+      the handover):
+      ```bash
+      sudo cp /opt/boatsched/deploy/boatsched-docker.service /etc/systemd/system/
+      sudo systemctl daemon-reload
+      ```
+- [ ] Scoped sudoers so `deploy` can start/stop **both** services during
+      handover/rollback — see the exact block in
+      [README §8](./README.md#one-time-server-provisioning). Verify with `visudo -cf`.
+
+> `/etc/boatsched/env` is reused as-is. Just confirm it still has
+> `BOATSCHED_ADMIN` + `BOATSCHED_ADMIN_PW` (the validation step logs in with them).
+
+---
+
+## Step 3 — (Only if deploying via CI) Forgejo secrets
+
+Skip this if you'll run `deploy.sh` by hand (Step 4, option B).
+
+- [ ] `REGISTRY_USER`, `REGISTRY_TOKEN` (`write:package`), `SSH_PRIVATE_KEY`,
+      `SSH_HOST`, `SSH_USER=deploy`, `SSH_KNOWN_HOSTS` (from `ssh-keyscan`).
 - [ ] Authorize the CI deploy **public** key in `~deploy/.ssh/authorized_keys`.
+- [ ] Confirm the registry path/casing (`codeberg.org/oventosti/boatsched`) matches
+      the real package.
 
 ---
 
-## 4. nginx + TLS (manual, on the box)
+## Step 4 — Run the cutover
 
-- [ ] Install `deploy/nginx.conf` → `/etc/nginx/conf.d/boatsched.conf`
-- [ ] Replace `example.com` with the real domain in **both** server blocks +
-      the `ssl_certificate*` paths
-- [ ] `certbot --nginx -d <domain>` (or place certs manually)
-- [ ] `nginx -t && systemctl reload nginx`
-- [ ] If nginx already fronts the Python app, no change is needed — same
-      `127.0.0.1:8000` upstream + `/collab/` WS upgrade + `X-Real-IP`.
+`deploy.sh` is **never-break-prod**: backup live DB → pull/build image → validate
+it on `:8001` against a **copy** of the live DB (health + `GET /` + admin login) →
+stop Python (releases the DB) → start the container on `:8000` → health-gate, with
+**automatic rollback to Python** on any failure.
 
----
+Pick one:
 
-## 5. First cutover (migrating from Python)
+- **A — via CI:** push to `main`. The build job builds+tests+pushes the image; the
+  deploy job SSHes in and runs `deploy.sh`.
+- **B — manually on the box:**
+  ```bash
+  sudo -u deploy bash /opt/boatsched/deploy/deploy.sh
+  # (BUILD_ON_HOST=1 already in the env file if you're not using the registry)
+  ```
 
-- [ ] Leave the Python `boatsched.service` **running**; `boatsched-docker` **not** enabled.
-- [ ] Run once on the box: `bash /opt/boatsched/deploy/deploy.sh`
-      (or push to `main` to let CI do it). It backs up the DB, validates the image
-      on `:8001` against a DB copy, stops Python, starts the container on `:8000`,
-      and health-gates with auto-rollback to Python on failure.
-- [ ] Smoke-test through HTTPS: login, seasons, members progression (read + inline
-      level edit), a `/solve`, live `/collab` editing, **and the new eval cards
-      (`/api/skills`, `/api/progress` save+reload)**.
-- [ ] Soak with Python still installed. When satisfied:
-      `sudo systemctl disable boatsched` (keep the unit file for rollback).
+- [ ] Watch the log: it must print `validation PASSED` then `Rust service healthy
+      on :8000`. If validation fails, **prod is untouched** (Python still serving).
+      If the post-handover health check fails, it **auto-rolls back to Python**.
 
 ---
 
-## What was verified locally vs. what still needs the real box
+## Step 5 — Verify, soak, then retire Python
+
+- [ ] Smoke-test through **HTTPS** (real domain): login, seasons, members
+      progression (read + inline level edit), a `/solve`, live `/collab` editing,
+      and the **eval cards** (open a student card, set skipper + skills, save,
+      reload — confirm it persists; no 404 in DevTools).
+- [ ] Confirm the live data is all there (members, schedules, seasons).
+- [ ] Soak with Python still installed (it's stopped, not removed).
+- [ ] Once satisfied, stop it from restarting but **keep the unit for rollback**:
+      `sudo systemctl disable boatsched`
+
+---
+
+## Rollback
+
+- **Automatic:** `deploy.sh` rolls back to Python (or the previous image) if the
+  new container fails its health gate. No action needed.
+- **Manual → Python:**
+  ```bash
+  sudo systemctl stop boatsched-docker
+  sudo systemctl start boatsched
+  ```
+- **Manual → previous image:**
+  ```bash
+  docker tag <previous-image-id> codeberg.org/oventosti/boatsched:latest
+  sudo systemctl restart boatsched-docker
+  ```
+- **Data:** the most recent `/var/lib/boatsched/pre-cutover-*.db` (written by
+  `deploy.sh` before handover) is a point-in-time restore of the DB.
+
+---
+
+## What was verified locally vs. what to confirm on the box
 
 **Verified locally (this machine):**
-- `deploy.sh` / `docker-entrypoint.sh` syntax; both compose files resolve and
-  produce the strict prod env (`REQUIRE_AUTH/SECURE_COOKIES/MIN_PASSWORD_LEN`),
-  correct ports (`:8000` / `:8001`), isolated validate project + DB dir.
-- **Full image build from the fixed repo-root context** — toolchain, OR-Tools SDK
-  fetch, full compile, and the in-image `cargo test` gate all pass (incl. the new
-  eval tests); `vendor/` correctly excluded. Final image ~201 MB.
-- **Container runtime smoke test** (mirrors the `:8001` validation): boots healthy,
-  `/api/health` 200, `GET /` serves the embedded SPA, admin login 200 / bad-pw 401
-  (DB read + scrypt), `/api/skills` returns the DB-seeded catalog (migrations ran).
-- Confirmed the container runs fine as a non-10001 uid (the `user:` approach in
-  §0b) against a data dir not owned by 10001.
+- `deploy.sh` / entrypoint syntax; both compose files resolve to the strict prod
+  env, correct ports (`:8000`/`:8001`), isolated validate project + DB dir.
+- **Full image build** from the repo-root context — toolchain + OR-Tools SDK +
+  compile + the in-image `cargo test` gate all pass (incl. the new eval tests).
+- **Container runtime**: boots healthy, `/api/health` 200, serves the SPA, admin
+  login 200 / bad-pw 401 (DB read + scrypt), `/api/skills` returns the seeded
+  catalog (migrations ran), and it runs fine **as a non-image uid** against a DB
+  dir it doesn't own by image-uid — confirming the `user: "1000:1000"` approach.
 
-**NOT testable off the box (verify there):**
-- `systemctl` handover and the auto-rollback paths (Python / previous image).
-- SSH-from-CI and registry push/pull.
-- The end-to-end `deploy.sh` cutover on the live box (the pieces it calls are all
-  verified individually above).
+**Confirm on the live box (can't be tested off-box):**
+- `id deploy` is `1000:1000` (else adjust the `user:` line — Step 2).
+- The `systemctl` handover + auto-rollback paths.
+- SSH-from-CI / registry pull (if using CI).
+- The real `deploy.sh` cutover end-to-end (its individual pieces are verified above).

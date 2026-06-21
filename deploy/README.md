@@ -87,7 +87,12 @@ no schema change, no forced re-login of stored credentials.**
 
 ---
 
-## One-time server provisioning
+## One-time server provisioning (clean box)
+
+This is the **clean-box** path — provisioning a fresh host for the container. If a
+Python boatsched is **already live with data**, do **not** follow this top-to-bottom;
+use [deploy/CUTOVER_CHECKLIST.md](./CUTOVER_CHECKLIST.md), which reuses the existing
+user/DB/env and only adds the Docker delta.
 
 Run as root (or via `sudo`).
 
@@ -198,23 +203,14 @@ configured for the Python deployment, **no nginx change is required.**
 
 ---
 
-## Migrating from the Python deployment (first cutover)
+## Migrating from a live Python deployment (first cutover)
 
-1. Provision the Docker bits above (steps 1–8), but **leave the Python
-   `boatsched.service` running** — do not enable `boatsched-docker` yet.
-2. Run the cutover (from CI by pushing to `main`, or manually on the box):
-   ```bash
-   bash /opt/boatsched/deploy/deploy.sh
-   ```
-   It backs up the DB, validates the image on `:8001` against a DB copy, then
-   stops Python and starts the container on `:8000`, health-gating with automatic
-   rollback to Python on failure.
-3. Smoke-test through nginx (HTTPS): login, seasons, **members progression tab
-   (read + inline level edit)**, a `/solve`, and live `/collab` editing.
-4. Soak with Python still installed. Once satisfied:
-   ```bash
-   sudo systemctl disable boatsched     # keep the unit file for emergency rollback
-   ```
+The provisioning above is the **clean-box** path. If a Python boatsched is
+**already running with live data**, follow the dedicated step-by-step runbook
+instead — it covers only the delta (the box is already provisioned for Python) and
+the safe, never-break-prod handover:
+
+➡️ **[deploy/CUTOVER_CHECKLIST.md](./CUTOVER_CHECKLIST.md)**
 
 ---
 
