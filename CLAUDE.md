@@ -288,15 +288,19 @@ self-contained — the host only needs Docker. The SQLite DB is bind-mounted fro
 `/var/lib/boatsched` and reused unchanged (the Rust schema/migrations are
 byte-compatible with the Python DB).
 
-CI/CD (`.forgejo/workflows/deploy.yml`): push to `main` → build+test the image →
-push to the Codeberg registry → SSH to the box → `deploy/deploy.sh`. The cutover
-is **never-break-prod**: backup DB → validate the image against a *copy* on
-`:8001` → single-writer handover on `:8000` → health-gate with **automatic
-rollback**. See `deploy/README.md` for the full runbook.
+CD (`.forgejo/workflows/deploy.yml`): push to `main` → a Codeberg **shared
+runner** (`codeberg-small`) SSHes to the box → `deploy/deploy.sh`, which **builds
+the image on the box** (`BUILD_ON_HOST=1`; Codeberg CI can't build OCI images and
+won't accept self-hosted runners — so no registry). The build runs `cargo test`
+as the gate. The cutover is **never-break-prod**: backup DB → build → validate the
+image against a *copy* on `:8001` → single-writer handover on `:8000` →
+health-gate with **automatic rollback**. See `deploy/README.md` for the full
+runbook and `deploy/CUTOVER_CHECKLIST.md` for the live-migration steps.
 
-Quick local run:
+Quick local run (build context is the repo root — the binary embeds
+`src/boatsched/viewer.html`):
 
 ```bash
-docker build -t boatsched rust/        # build the image
+docker build -t boatsched -f rust/Dockerfile .   # build the image
 docker compose up -d                   # run (needs /etc/boatsched/env + DB dir)
 ```
