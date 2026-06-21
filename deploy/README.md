@@ -1,12 +1,14 @@
 # Deployment — boatsched (Rust) on a Hetzner box
 
-CD: push to `main` on Codeberg (`Oventosti/boatsched`) → a Forgejo Actions
-**shared runner** (`codeberg-small`) SSHes to the box and runs `deploy/deploy.sh`,
-which **builds the image on the box** (`BUILD_ON_HOST=1`) and does the
-never-break-prod cutover. The multi-stage build runs `cargo test` as the gate (on
-the box, at build time), so a failing test fails the deploy. The app runs as a
-**single Docker container** (managed by `boatsched-docker.service`), bound to
-`127.0.0.1:8000`, behind nginx + certbot (TLS terminated by nginx).
+CI/CD: on every PR and every push to `main`, a Forgejo Actions **shared runner**
+(`codeberg-small`) runs the **`test` job** (`cargo test` over the workspace). On a
+push to `main`, the **`deploy` job** then runs (`deploy: needs: test`, so only if
+tests pass): it SSHes to the box and runs `deploy/deploy.sh`, which **builds the
+image on the box** (`BUILD_ON_HOST=1`) and does the never-break-prod cutover. The
+on-box build runs `cargo test` again, so the gate is enforced twice (CI + at
+deploy time). The app runs as a **single Docker container** (managed by
+`boatsched-docker.service`), bound to `127.0.0.1:8000`, behind nginx + certbot
+(TLS terminated by nginx).
 
 > **Why build on the box (no registry):** Codeberg's shared runners can't build
 > OCI images (no privileged Docker on shared infra), and Codeberg doesn't accept
@@ -77,21 +79,32 @@ Only SSH is needed (no registry — the box builds):
 
 ## CI runner notes
 
-`.forgejo/workflows/deploy.yml` is a **single `deploy` job** on Codeberg's shared
-runner (`runs-on: codeberg-small`). It only SSHes to the box and runs
-`deploy/deploy.sh`; it does **not** build or push an image. The box builds the
-image itself because `BUILD_ON_HOST=1` is set in `/etc/boatsched/env`.
+`.forgejo/workflows/deploy.yml` has two jobs, both on Codeberg's shared runner
+(`runs-on: codeberg-small`):
 
-This is deliberate:
+- **`test`** — runs on every PR and every push to `main`. In an `ubuntu:24.04`
+  container (matching the OR-Tools ubuntu-24.04 SDK ABI, like `rust/Dockerfile`),
+  it installs the pinned Rust toolchain, fetches the OR-Tools SDK, and runs
+  `cargo test --workspace --locked`. Every step is shell-only (no JS actions), so
+  the container needs no Node — it clones the repo manually.
+- **`deploy`** — runs only on a push to `main` and only if `test` passed
+  (`needs: test`). It SSHes to the box and runs `deploy/deploy.sh`; it does **not**
+  build or push an image. The box builds it (`BUILD_ON_HOST=1` in
+  `/etc/boatsched/env`), and that on-box build runs `cargo test` again — so the
+  gate holds even if you deploy by hand.
+
+Why the box builds (not CI):
 
 - Codeberg's **shared runners can't build OCI images** (no privileged Docker), and
 - Codeberg does **not** accept user **self-hosted** runners (registration is
   refused — `runner registration token not found`), so a build-on-CI job has
   nowhere to run.
 
-Building on the box compiles during the deploy (CPU/RAM contention for a few
-minutes) but does **not** disturb the running service — the new image is only
-swapped in after it validates on `:8001`.
+The `test` job still runs `cargo test` directly (no Docker needed) — only *image
+building* is the problem on shared runners, not compiling/testing. Building on the
+box compiles during the deploy (CPU/RAM contention for a few minutes) but does
+**not** disturb the running service — the new image is only swapped in after it
+validates on `:8001`.
 
 > **Want build-on-CI later?** If you move to a self-hosted Forgejo instance with a
 > runner that can build images, restore the registry `build` job (in git history)
@@ -252,7 +265,9 @@ the safe, never-break-prod handover:
 ## Deploy flow (automatic)
 
 1. Push to `main` on Codeberg.
-2. **deploy** job (shared runner `codeberg-small`): SSHes as `deploy` and runs
+2. **test** job (shared runner `codeberg-small`): `cargo test --workspace`. The
+   deploy is gated on this (`deploy: needs: test`) — a red test means no deploy.
+3. **deploy** job (shared runner `codeberg-small`): SSHes as `deploy` and runs
    `deploy/deploy.sh`, which:
    - `git pull --ff-only` (compose/unit/script updates),
    - backs up the live DB (`sqlite3 .backup`),
