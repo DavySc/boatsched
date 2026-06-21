@@ -100,8 +100,25 @@ Run as root (or via `sudo`).
 
 ```bash
 apt update
-apt install -y docker.io docker-compose-plugin git nginx sqlite3 curl
+apt install -y docker.io git nginx sqlite3 curl
 systemctl enable --now docker
+```
+
+The scripts use Compose **v2** (`docker compose`, with a space). The
+`docker-compose-plugin` package only exists in Docker's own apt repo, **not** with
+the distro's `docker.io`. Install the v2 plugin one of these ways:
+
+```bash
+# A) distro package (Ubuntu 24.04 / Debian 13+):
+apt install -y docker-compose-v2
+
+# B) distro-agnostic — drop the plugin binary in (works alongside docker.io):
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+docker compose version   # must report v2.x
 ```
 
 ### 2. Create the `deploy` user (in the `docker` group)

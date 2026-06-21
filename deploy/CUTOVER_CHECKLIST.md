@@ -51,11 +51,21 @@ None of this touches the running Python service or its DB. Run on the box.
       files set `user: "1000:1000"` so the container runs as `deploy` and can open
       the live deploy-owned DB. **If it differs, edit the `user:` line in
       `docker-compose.yml` AND `docker-compose.validate.yml` to match.**
-- [ ] Install Docker + compose plugin; add `deploy` to the `docker` group:
+- [ ] Install the Docker engine + Compose **v2** plugin; add `deploy` to the
+      `docker` group. Note `docker-compose-plugin` is **not** in the distro repos
+      (only in Docker's own apt repo), so install the v2 plugin separately:
       ```bash
-      sudo apt install -y docker.io docker-compose-plugin
+      sudo apt install -y docker.io
       sudo systemctl enable --now docker
-      sudo usermod -aG docker deploy      # re-login / new shell for deploy to take effect
+      # Compose v2 (the scripts use `docker compose`, with a space) — pick one:
+      sudo apt install -y docker-compose-v2          # Ubuntu 24.04 / Debian 13+
+      # …or, distro-agnostic:
+      #   sudo mkdir -p /usr/local/lib/docker/cli-plugins
+      #   sudo curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+      #     -o /usr/local/lib/docker/cli-plugins/docker-compose
+      #   sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+      docker compose version                          # must report v2.x
+      sudo usermod -aG docker deploy                  # re-login for deploy to take effect
       ```
 - [ ] Update the checkout: `sudo -u deploy git -C /opt/boatsched pull --ff-only origin main`
       (brings in `docker-compose.yml`, the unit, `deploy.sh`).
