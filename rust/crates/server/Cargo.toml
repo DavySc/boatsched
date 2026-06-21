@@ -1,0 +1,27 @@
+[package]
+name = "boatsched-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+boatsched-core.workspace = true
+boatsched-db.workspace = true
+boatsched-auth.workspace = true
+boatsched-roster.workspace = true
+boatsched-solver.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = { version = "0.7", features = ["macros", "ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "signal"] }
+uuid = { version = "1", features = ["v4"] }
+yrs = "0.21"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+boatsched-roster.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+yrs = "0.21"

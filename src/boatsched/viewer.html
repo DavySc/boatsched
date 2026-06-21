@@ -204,10 +204,10 @@
   .state-T{background:rgba(217,154,43,.22)}
   .state-V{background:rgba(91,140,90,.22)}
   .state-G{background:rgba(31,122,140,.22)}
-  .skipper-input{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
+  .skipper-input,.skipper-sel{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
     font-family:inherit;font-size:12px;width:100%;min-width:56px;background:#fdf9f4;
     color:var(--ink);box-sizing:border-box}
-  .skipper-input:focus{outline:none;border-color:var(--accent2)}
+  .skipper-input:focus,.skipper-sel:focus{outline:none;border-color:var(--accent2)}
   .eval-notes-section{padding:20px}
   .eval-notes{font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line);
     border-radius:8px;width:100%;min-height:80px;background:#fdf9f4;color:var(--ink);
@@ -466,6 +466,10 @@ let collabMode=false,ydoc=null,yprovider=null,ySchedule=null;
 // Eval card state
 let evalName=null,evalLevel=null,evalSaveTimer=null;
 let progressMap={};
+// Reference data (DB-driven), loaded lazily and cached.
+let SKILL_CATALOG=null;        // {k:[{category,eval_type,skills:[{id,label,subskills:[{id,label}]}]}],...}
+let INSTRUCTORS=[];            // [{id,name,...}]
+let MEMBER_ID_BY_NAME={};      // lowercased name -> member id
 
 const $=id=>document.getElementById(id);
 const fileInput=$("file"),drop=$("drop"),err=$("err");
@@ -928,13 +932,18 @@ function updateLockUI(){
   }
 }
 async function loadStudentsAndProgress(){
-  if(!HAS_DB)return;
+  if(!HAS_DB||!selectedSeason)return;
+  await ensureEvalRefData();
   try{
-    const r=await fetch("/api/progress");
+    const r=await fetch("/api/progress?season_id="+encodeURIComponent(selectedSeason));
     if(r.ok){
       const data=await r.json();
       progressMap={};
-      (data.progressData||[]).forEach(p=>{if(p&&p.studentId)progressMap[p.studentId]=p;});
+      // Key by name (the eval card opens by name); carry member_id/days/notes.
+      (data.progressData||[]).forEach(p=>{
+        if(!p||!p.name)return;
+        progressMap[p.name]={member_id:p.member_id,days:p.days||{},notes:p.notes||""};
+      });
     }
   }catch(e){console.error("[eval]",e);}
 }
@@ -952,33 +961,67 @@ function showApp(){
 
 // ── Eval card ──────────────────────────────────────────────────
 const DUTCH_DAY={Sat:"Zat",Sun:"Zon",Mon:"Maa",Tue:"Din",Wed:"Woe",Fri:"Vri"};
-const STD_CYCLE=["","•","✓"];
-const OVR_CYCLE=["","O","T","V","G"];
+// Cells store semantic *codes* (matching the DB); the cycle order per eval type
+// and the code→glyph mapping for display live here.
+const STD_CODES=["","attempted","completed"];
+const OVR_CODES=["","O","T","V","G"];
+const CODE_GLYPH={attempted:"•",completed:"✓",O:"O",T:"T",V:"V",G:"G"};
 
-function stateClass(s){
+function stateClass(code){
   return{
-    "•":"state-dot","✓":"state-check",
-    "O":"state-O","T":"state-T","V":"state-V","G":"state-G"
-  }[s]||"";}
+    attempted:"state-dot",completed:"state-check",
+    O:"state-O",T:"state-T",V:"state-V",G:"state-G"
+  }[code]||"";}
 
-function getOrInitProgress(name,numDays){
+// Fetch + cache the DB-driven reference data the eval card needs.
+async function ensureEvalRefData(){
+  try{
+    if(SKILL_CATALOG===null){
+      const r=await fetch("/api/skills");
+      if(r.ok){const d=await r.json();SKILL_CATALOG=d.levels||{};}
+    }
+    if(!INSTRUCTORS.length){
+      const r=await fetch("/instructors");
+      if(r.ok)INSTRUCTORS=await r.json();
+    }
+    if(!Object.keys(MEMBER_ID_BY_NAME).length){
+      const r=await fetch("/api/members");
+      if(r.ok){(await r.json()).forEach(m=>{MEMBER_ID_BY_NAME[m.name.toLowerCase()]=m.id;});}
+    }
+  }catch(e){console.error("[eval] ref data",e);}
+}
+function resolveMemberId(name){return MEMBER_ID_BY_NAME[(name||"").toLowerCase()]??null;}
+
+function getOrInitProgress(name){
   if(!progressMap[name]){
-    progressMap[name]={
-      studentId:name,
-      days:Array.from({length:numDays},()=>({skipperName:"",records:{}})),
-      notes:""
-    };
+    progressMap[name]={member_id:resolveMemberId(name),days:{},notes:""};
   }
-  while(progressMap[name].days.length<numDays)
-    progressMap[name].days.push({skipperName:"",records:{}});
+  if(progressMap[name].member_id==null)progressMap[name].member_id=resolveMemberId(name);
+  if(!progressMap[name].days)progressMap[name].days={};
   return progressMap[name];
 }
+function ensureDay(p,dayCode){
+  if(!p.days[dayCode])p.days[dayCode]={skippers:[],records:{}};
+  return p.days[dayCode];
+}
 
-function openEvalCard(name,level){
+function skipperOptions(selectedId){
+  let o=`<option value="">—</option>`;
+  for(const ins of INSTRUCTORS){
+    const sel=(selectedId!=null&&String(ins.id)===String(selectedId))?" selected":"";
+    o+=`<option value="${ins.id}"${sel}>${escH(ins.name)}</option>`;
+  }
+  return o;
+}
+
+async function openEvalCard(name,level){
   evalName=name;evalLevel=level;
+  await ensureEvalRefData();
+  if(evalName!==name)return;               // user navigated away while loading
   const dl=dayList();
   const days=dl.length>0?dl.slice(0,5):["Dag 1","Dag 2","Dag 3","Dag 4","Dag 5"];
-  const progress=getOrInitProgress(name,days.length);
+  const progress=getOrInitProgress(name);
+  days.forEach(d=>ensureDay(progress,d));
   const skills=getSkillsForLevel(level);
   const N=days.length;
 
@@ -990,35 +1033,30 @@ function openEvalCard(name,level){
   });
   head+="</tr>";
 
-  // Skipper row
+  // Skipper row — instructor picker(s), up to a pair per day
   let body=`<tr><td class="skill-label" style="font-style:italic;color:#8a7a62;font-weight:400;font-size:12px">Schipper</td>`;
-  for(let i=0;i<N;i++){
-    const v=escA(progress.days[i]?.skipperName||"");
-    body+=`<td style="padding:4px 6px"><input class="skipper-input" data-skipper-day="${i}" value="${v}" placeholder="naam…"></td>`;
+  for(const d of days){
+    const sk=progress.days[d]?.skippers||[];
+    body+=`<td style="padding:4px 6px"><select class="skipper-sel" data-skipper-day="${escA(d)}" data-pos="1">${skipperOptions(sk[0])}</select>`
+        +`<select class="skipper-sel" data-skipper-day="${escA(d)}" data-pos="2" style="margin-top:3px">${skipperOptions(sk[1])}</select></td>`;
   }
   body+="</tr>";
 
-  // Category + skill rows
+  // Category + skill rows (skill_id-keyed)
   for(const cat of skills){
-    const isOverall=cat.evaluationType==="overall";
     body+=`<tr class="cat-row"><td class="cat-hdr" colspan="${N+1}">${escH(cat.category)}</td></tr>`;
+    const rowFor=(id,label,cls)=>{
+      let tr=`<tr><td class="skill-label${cls?" "+cls:""}">${escH(label)}</td>`;
+      for(const d of days){
+        const code=progress.days[d]?.records[id]||"";
+        const g=CODE_GLYPH[code]||"";
+        tr+=`<td class="${stateClass(code)}" data-skill="${id}" data-day="${escA(d)}" data-eval-type="${cat.eval_type}">${g||'<span style="opacity:.22">·</span>'}</td>`;
+      }
+      return tr+"</tr>";
+    };
     for(const skill of cat.skills){
-      const key=skill.skill;
-      body+=`<tr><td class="skill-label">${escH(key)}</td>`;
-      for(let i=0;i<N;i++){
-        const val=progress.days[i]?.records[key]||"";
-        body+=`<td class="${stateClass(val)}" data-skill="${escA(key)}" data-day="${i}" data-eval-type="${isOverall?"overall":"standard"}">${val||'<span style="opacity:.22">·</span>'}</td>`;
-      }
-      body+="</tr>";
-      for(const sub of skill.subSkills){
-        const subKey=`${key}-${sub}`;
-        body+=`<tr><td class="skill-label sub">${escH(sub)}</td>`;
-        for(let i=0;i<N;i++){
-          const val=progress.days[i]?.records[subKey]||"";
-          body+=`<td class="${stateClass(val)}" data-skill="${escA(subKey)}" data-day="${i}" data-eval-type="${isOverall?"overall":"standard"}">${val||'<span style="opacity:.22">·</span>'}</td>`;
-        }
-        body+="</tr>";
-      }
+      body+=rowFor(skill.id,skill.label,"");
+      for(const sub of (skill.subskills||[]))body+=rowFor(sub.id,sub.label,"sub");
     }
   }
 
@@ -1058,19 +1096,20 @@ function closeEvalCard(){
 
 function evalCellClick(td){
   if(!evalName)return;
-  const dayIdx=parseInt(td.dataset.day);
-  const skillKey=td.dataset.skill;
+  const day=td.dataset.day;
+  const skillKey=td.dataset.skill;          // skill_id (string)
   const evalType=td.dataset.evalType;
   const progress=progressMap[evalName];
-  if(!progress||!progress.days[dayIdx])return;
-  const cur=progress.days[dayIdx].records[skillKey]||"";
-  const cycle=evalType==="overall"?OVR_CYCLE:STD_CYCLE;
+  if(!progress)return;
+  const d=ensureDay(progress,day);
+  const cur=d.records[skillKey]||"";
+  const cycle=evalType==="overall"?OVR_CODES:STD_CODES;
   const next=cycle[(cycle.indexOf(cur)+1)%cycle.length];
-  progress.days[dayIdx].records[skillKey]=next;
+  if(next)d.records[skillKey]=next;else delete d.records[skillKey];
+  const g=CODE_GLYPH[next]||"";
   td.textContent="";
-  if(next){td.textContent=next;}else{td.innerHTML='<span style="opacity:.22">·</span>';}
+  if(g){td.textContent=g;}else{td.innerHTML='<span style="opacity:.22">·</span>';}
   td.className=stateClass(next);
-  td.dataset.skill=skillKey;td.dataset.day=dayIdx;td.dataset.evalType=evalType;
   scheduleEvalSave();
 }
 
@@ -1081,171 +1120,42 @@ function scheduleEvalSave(){
   evalSaveTimer=setTimeout(()=>doEvalSave(true),1800);
 }
 
+const WEEKDAYS=new Set(["Fri","Sat","Sun","Mon","Tue","Wed"]);
+
 async function doEvalSave(silent=false){
   if(!evalName||!progressMap[evalName])return;
   const status=$("eval-save-status");
+  const p=progressMap[evalName];
+  if(p.member_id==null){if(status)status.textContent="Onbekende deelnemer";return;}
+  if(!selectedSeason){if(status)status.textContent="Geen seizoen geselecteerd";return;}
   if(!silent&&status)status.textContent="Opslaan…";
+  // Map the per-day model to the structured payload (weekday days only).
+  const days=Object.entries(p.days||{})
+    .filter(([day])=>WEEKDAYS.has(day))
+    .map(([day,d])=>({
+      day,
+      skippers:[...new Set((d.skippers||[]).filter(x=>x!=null&&x!==""))].map(Number),
+      records:d.records||{},
+    }));
+  const payload={member_id:p.member_id,season_id:Number(selectedSeason),notes:p.notes||"",days};
   try{
     const r=await fetch("/api/progress",{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(progressMap[evalName])
+      body:JSON.stringify(payload)
     });
     if(r.ok){
       if(status){status.textContent="Opgeslagen ✓";setTimeout(()=>{if(status)status.textContent="";},2000);}
-    }else{if(status)status.textContent="Opslaan mislukt";}
+    }else{
+      let msg="Opslaan mislukt";try{const e=await r.json();if(e&&e.error)msg=e.error;}catch(_){}
+      if(status)status.textContent=msg;
+    }
   }catch(e){if(status)status.textContent="Opslaan mislukt";}
 }
 
-// ── Skill matrices (ported from React App.tsx) ─────────────────
+// ── Skill catalog (DB-driven; seeded from the eval_skill_* tables) ──
+// Source of truth is the server (GET /api/skills); cached in SKILL_CATALOG.
 function getSkillsForLevel(level){
-  const n={k:1,b:2,A:3,B:4}[level]??0;
-  switch(n){
-    case 1:return[
-      {category:"Schip in rust",evaluationType:"standard",skills:[
-        {skill:"Zeilklaar maken grootzeil",subSkills:["Vallen aanslaan","Huikje"]},
-        {skill:"Zeilklaar maken fok",subSkills:["Fok hijsen"]},
-        {skill:"Hijsen grootzeil",subSkills:["Volgorde","Hijsen","Afwerking"]},
-        {skill:"Hijsen fok",subSkills:[]},
-        {skill:"Strijken grootzeil",subSkills:["Volgorde","Snelheid","Zeil opdoeken"]},
-        {skill:"Strijken fok",subSkills:[]},
-        {skill:"Afmeren Box Rufus",subSkills:["Volgorde","Afwerking"]},
-        {skill:"Nachtklaar maken",subSkills:["Huikje","Schoten/ vallen","Breien","Poetsen"]},
-        {skill:"Verhalen schip langs de wal",subSkills:[]},
-        {skill:"Verhalen schip 180º",subSkills:[]},
-        {skill:"Bomen",subSkills:[]},
-        {skill:"Knopen",subSkills:[]},
-        {skill:"Peddelen",subSkills:[]}
-      ]},
-      {category:"Basisvaardigheden",evaluationType:"standard",skills:[
-        {skill:"Sturen",subSkills:[]},
-        {skill:"Koersen",subSkills:["Windrichting","Namen","Oploeven/ afvallen","Grenskoersen VDW","Grenskoersen ADW"]},
-        {skill:"Zeilstanden",subSkills:["Op koers","Bediening fok","Zeilsturing opl/afv"]},
-        {skill:"Overstag",subSkills:["ADW","Commando's","Sturen"]},
-        {skill:"Dwarspeiling",subSkills:[]},
-        {skill:"Gijpen",subSkills:["VDW","Commando's","Werking roer"]}
-      ]},
-      {category:"Bijzondere verrichtingen",evaluationType:"standard",skills:[
-        {skill:"Eilandje ronden",subSkills:[]},
-        {skill:"Achtje varen",subSkills:[]}
-      ]},
-      {category:"Algemene indruk",evaluationType:"overall",skills:[
-        {skill:"Algemene indruk",subSkills:["Inzicht algemeen","Inzicht bijzondere verrichtingen","Organisatie","Inzet","Teamplayer"]}
-      ]}
-    ];
-    case 2:return[
-      {category:"Schip in rust",evaluationType:"standard",skills:[
-        {skill:"Zeilklaar maken grootzeil",subSkills:["Vallen aanslaan","Huikje"]},
-        {skill:"Zeilklaar maken fok",subSkills:["Fok hijsen"]},
-        {skill:"Hijsen grootzeil",subSkills:["Volgorde","Hijsen","Afwerking"]},
-        {skill:"Hijsen fok",subSkills:[]},
-        {skill:"Strijken grootzeil",subSkills:["Volgorde","Snelheid","Zeil opdoeken"]},
-        {skill:"Strijken fok",subSkills:[]},
-        {skill:"Afmeren Box Rufus",subSkills:["Volgorde","Afwerking"]},
-        {skill:"Nachtklaar maken",subSkills:["Huikje/ schoten/ vallen","Breien/ poetsen"]},
-        {skill:"Verhalen schip langs de wal",subSkills:[]},
-        {skill:"Verhalen schip 180º",subSkills:[]},
-        {skill:"Bomen",subSkills:[]},
-        {skill:"Knopen",subSkills:[]},
-        {skill:"Peddelen",subSkills:[]}
-      ]},
-      {category:"Basisvaardigheden",evaluationType:"standard",skills:[
-        {skill:"Sturen",subSkills:[]},
-        {skill:"Koersen",subSkills:["Windrichting/ namen","Oploeven/ afvallen","Grenskoersen ADW/ VDW"]},
-        {skill:"Zeilstanden",subSkills:["Op koers","Bediening fok","Zeilsturing opl/afv"]},
-        {skill:"Overstag",subSkills:["ADW","Commando's","Sturen"]},
-        {skill:"Dwarspeiling",subSkills:[]},
-        {skill:"Gijpen",subSkills:["VDW","Commando's","Werking roer"]},
-        {skill:"BPR",subSkills:[]}
-      ]},
-      {category:"Bijzondere verrichtingen",evaluationType:"standard",skills:[
-        {skill:"Aanleggen hogerwal",subSkills:["ADW lijnen","Dwarspeiling","Snelheid regelen","Wegdraaien","Organisatie"]},
-        {skill:"Afvaren hogerwal",subSkills:["Roer deinzend","Afduwrichting","Fok","Organisatie"]},
-        {skill:"MOB",subSkills:["Commando's","Parcours","Snelheid opl/ alv","Dwarspeiling","Snelheid regelen","Organisatie"]},
-        {skill:"Stormronde/ halzen",subSkills:[]}
-      ]},
-      {category:"Algemene indruk",evaluationType:"overall",skills:[
-        {skill:"Algemene indruk",subSkills:["Inzicht algemeen","Inzicht bijzondere verrichtingen","Organisatie","Inzet","Teamplayer"]}
-      ]}
-    ];
-    case 3:return[
-      {category:"Schip in rust",evaluationType:"standard",skills:[
-        {skill:"Zeilklaar maken grootzeil",subSkills:[]},
-        {skill:"Hijsen grootzeil",subSkills:[]},
-        {skill:"Hijsen fok",subSkills:[]},
-        {skill:"Strijken grootzeil",subSkills:[]},
-        {skill:"Strijken fok",subSkills:[]},
-        {skill:"Afmeren",subSkills:[]},
-        {skill:"Nachtklaar maken",subSkills:[]},
-        {skill:"Verhalen schip",subSkills:[]},
-        {skill:"Bomen",subSkills:[]},
-        {skill:"Knopen",subSkills:[]},
-        {skill:"Reven",subSkills:[]}
-      ]},
-      {category:"Basisvaardigheden",evaluationType:"standard",skills:[
-        {skill:"Sturen",subSkills:[]},
-        {skill:"Koersen",subSkills:["Windrichting/ namen","Oploeven/ afvallen","Grenskoersen ADW/ VDW"]},
-        {skill:"Zeilstanden",subSkills:["Op koers","Bediening fok","Zeilsturing opl/afv"]},
-        {skill:"Overstag",subSkills:[]},
-        {skill:"Dwarspeiling",subSkills:[]},
-        {skill:"Gijpen",subSkills:[]},
-        {skill:"BPR",subSkills:[]},
-        {skill:"Knopen",subSkills:[]}
-      ]},
-      {category:"Bijzondere verrichtingen",evaluationType:"standard",skills:[
-        {skill:"Aanleggen hogerwal",subSkills:["Dwarspeiling meth.","Opdraai meth.","Opschieter meth.","ADW lijnen","Dwarspeiling","Snelheid regelen","Wegdraaien","Organisatie"]},
-        {skill:"Afvaren hogerwal",subSkills:["Roer deinzend","Afduwrichting","Fok","Organisatie"]},
-        {skill:"MOB",subSkills:["Commando's","Parcours","Snelheid opl/ alv","Dwarspeiling","Snelheid regelen","Organisatie"]},
-        {skill:"Varend hijsen/ strijken",subSkills:["Organisatie","Koers","Kraanlijn"]},
-        {skill:"Kruisen nauw water",subSkills:["Korte slag","Lange slag","BPR","Hoogtelopen"]},
-        {skill:"Mast strijken",subSkills:[]},
-        {skill:"Mast zetten",subSkills:[]}
-      ]},
-      {category:"Algemene indruk",evaluationType:"overall",skills:[
-        {skill:"Algemene indruk",subSkills:["Inzicht algemeen","Inzicht bijzondere verrichtingen","Organisatie","Inzet","Teamplayer"]}
-      ]}
-    ];
-    case 4:return[
-      {category:"Schip in rust",evaluationType:"standard",skills:[
-        {skill:"Zeilklaar maken grootzeil",subSkills:[]},
-        {skill:"Hijsen grootzeil",subSkills:[]},
-        {skill:"Hijsen fok",subSkills:[]},
-        {skill:"Strijken grootzeil",subSkills:[]},
-        {skill:"Strijken fok",subSkills:[]},
-        {skill:"Afmeren",subSkills:[]},
-        {skill:"Nachtklaar maken",subSkills:[]},
-        {skill:"Verhalen schip",subSkills:[]},
-        {skill:"Bomen",subSkills:[]},
-        {skill:"Knopen",subSkills:[]},
-        {skill:"Reven",subSkills:[]}
-      ]},
-      {category:"Basisvaardigheden",evaluationType:"standard",skills:[
-        {skill:"Sturen",subSkills:[]},
-        {skill:"Koersen",subSkills:["Windrichting/ namen","Oploeven/ afvallen","Grenskoersen ADW/ VDW"]},
-        {skill:"Zeilstanden",subSkills:["Op koers","Bediening fok","Zeilsturing opl/afv"]},
-        {skill:"Overstag",subSkills:[]},
-        {skill:"Dwarspeiling",subSkills:[]},
-        {skill:"Gijpen",subSkills:[]},
-        {skill:"BPR",subSkills:[]},
-        {skill:"Knopen",subSkills:[]}
-      ]},
-      {category:"Bijzondere verrichtingen",evaluationType:"standard",skills:[
-        {skill:"Aanleggen hogerwal",subSkills:["Dwarspeiling meth.","Opdraai meth.","Opschieter meth.","ADW lijnen","Dwarspeiling","Snelheid regelen","Wegdraaien","Organisatie"]},
-        {skill:"Afvaren hogerwal",subSkills:["Roer deinzend","Afduwrichting","Fok","Organisatie"]},
-        {skill:"MOB",subSkills:["Commando's","Parcours","Snelheid opl/ alv","Dwarspeiling","Snelheid regelen","Organisatie"]},
-        {skill:"Kruisen nauw water",subSkills:["Korte slag","Lange slag","BPR","Hoogtelopen"]},
-        {skill:"Varend reven",subSkills:[]},
-        {skill:"Loskomen",subSkills:[]},
-        {skill:"Aanleggen lagerwal",subSkills:["Parcours","Organisatie","Inzicht","Strijken"]},
-        {skill:"Afvaren lagerwal",subSkills:["Parcours","Organisatie","Inzicht","Afduwen","Hijsen"]},
-        {skill:"Ankeren",subSkills:["Parcours","Organisatie","Deinzen","Ankermaat"]},
-        {skill:"Ankerop gaan",subSkills:["Organisatie","Inzicht","Ankermaat"]}
-      ]},
-      {category:"Algemene indruk",evaluationType:"overall",skills:[
-        {skill:"Algemene indruk",subSkills:["Inzicht algemeen","Inzicht bijzondere verrichtingen","Organisatie","Inzet","Teamplayer"]}
-      ]}
-    ];
-    default:return[];
-  }
+  return (SKILL_CATALOG&&SKILL_CATALOG[level])||[];
 }
 
 // ── Event listeners ────────────────────────────────────────────
@@ -1355,17 +1265,19 @@ $("eval-overlay").addEventListener("click",e=>{
   const td=e.target.closest("td[data-skill]");
   if(td){evalCellClick(td);return;}
 });
+// Skipper instructor picker(s): recompute the day's skipper list from both selects.
+$("eval-overlay").addEventListener("change",e=>{
+  if(!evalName)return;
+  const sel=e.target.closest(".skipper-sel");
+  if(!sel||!progressMap[evalName])return;
+  const day=sel.dataset.skipperDay;
+  const ids=[...$("eval-overlay").querySelectorAll(`.skipper-sel[data-skipper-day="${day}"]`)]
+    .map(s=>s.value).filter(v=>v!=="").map(Number);
+  ensureDay(progressMap[evalName],day).skippers=[...new Set(ids)];
+  scheduleEvalSave();
+});
 $("eval-overlay").addEventListener("input",e=>{
   if(!evalName)return;
-  const inp=e.target.closest(".skipper-input");
-  if(inp){
-    const dayIdx=parseInt(inp.dataset.skipperDay);
-    if(progressMap[evalName]&&progressMap[evalName].days[dayIdx]!==undefined){
-      progressMap[evalName].days[dayIdx].skipperName=inp.value;
-      scheduleEvalSave();
-    }
-    return;
-  }
   if(e.target.id==="eval-notes"&&progressMap[evalName]){
     progressMap[evalName].notes=e.target.value;
     scheduleEvalSave();
@@ -1659,12 +1571,16 @@ const PROG_LEVELS=["k","b","A","B"];
 
 async function renderProgression(){
   const wrap=$("prog-table-wrap");
-  wrap.innerHTML='<p style="color:var(--ink2);font-size:14px">Laden…</p>';
+  // Only show the placeholder on the first load — keep the existing table
+  // visible while refreshing so switching tabs doesn't flicker.
+  if(!wrap.dataset.loaded)
+    wrap.innerHTML='<p style="color:var(--ink2);font-size:14px">Laden…</p>';
   let data;
   try{
     const r=await fetch("/api/members/progression");
     data=await r.json();
   }catch(e){
+    wrap.dataset.loaded="";
     wrap.innerHTML='<p class="err">Laden mislukt.</p>';return;
   }
   const {seasons,members}=data;
@@ -1687,6 +1603,7 @@ async function renderProgression(){
   }
   html+='</tbody></table></div>';
   wrap.innerHTML=html;
+  wrap.dataset.loaded="1";
   // Admins edit a student's level inline; the change is PATCHed immediately.
   if(IS_ADMIN){
     wrap.querySelectorAll("select.level-edit").forEach(sel=>{

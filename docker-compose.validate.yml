@@ -1,0 +1,49 @@
+# boatsched — pre-cutover VALIDATION stack.
+#
+# Runs the exact image we're about to deploy against a COPY of the production DB
+# on a side port (127.0.0.1:8001), so we prove the binary loads (catches the
+# OR-Tools/ABI failure mode) and serves correctly WITHOUT touching the live
+# service or the live DB. deploy/deploy.sh brings this up, smoke-tests it, and
+# tears it down before the real handover.
+#
+#   VALIDATE_DB_DIR=/var/lib/boatsched-validate \
+#     docker compose -p boatsched-validate -f docker-compose.validate.yml up -d
+#
+# Distinct project name (-p boatsched-validate) and container name so it never
+# collides with the production stack.
+
+services:
+  boatsched-validate:
+    image: ${BOATSCHED_IMAGE:-codeberg.org/oventosti/boatsched:latest}
+    # Build context is the repo root (matches docker-compose.yml); see rust/Dockerfile.
+    build:
+      context: .
+      dockerfile: rust/Dockerfile
+    container_name: boatsched-validate
+    restart: "no"
+
+    # Match docker-compose.yml: run as the deploy user (uid:gid 1000:1000) so the
+    # validation DB copy dir (owned by deploy) is writable without a chown.
+    user: "1000:1000"
+
+    ports:
+      - "127.0.0.1:8001:8000"
+
+    # A COPY of the prod DB — never the live file (avoids a second writer).
+    volumes:
+      - ${VALIDATE_DB_DIR:-/var/lib/boatsched-validate}:/data
+
+    env_file:
+      - /etc/boatsched/env
+    environment:
+      - BOATSCHED_DB=/data/boatsched.db
+      - BOATSCHED_REQUIRE_AUTH=1
+      - BOATSCHED_SECURE_COOKIES=1
+      - BOATSCHED_MIN_PASSWORD_LEN=8
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

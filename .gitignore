@@ -38,3 +38,7 @@ schedule.csv
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# Rust build artifacts
+rust/target/
+rust/vendor/

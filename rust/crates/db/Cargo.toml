@@ -1,0 +1,14 @@
+[package]
+name = "boatsched-db"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+boatsched-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+scrypt = { version = "0.11", default-features = false }
+rand = "0.8"
+subtle = "2"

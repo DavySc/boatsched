@@ -1,5 +1,5 @@
 # CLAUDE.md
-
+claude --resume 3f74bae1-11a5-49f1-b98d-cb61742a354b
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Repository layout
@@ -14,11 +14,15 @@ boatsched/
 │   ├── server.py      FastAPI app factory
 │   └── viewer.html    Unified SPA (optimizer + eval tracker, embedded asset)
 ├── tests/
+├── rust/                   Rust rewrite (workspace; prod artifact)
+│   └── Dockerfile          multi-stage image (binary + OR-Tools SDK)
 ├── deploy/
 │   ├── nginx.conf
-│   └── boatsched.service
-├── Dockerfile
-├── docker-compose.yml
+│   ├── boatsched.service          legacy Python systemd unit (rollback target)
+│   ├── boatsched-docker.service   prod: Docker container via compose
+│   └── deploy.sh                  never-break-prod cutover (validate + auto-rollback)
+├── Dockerfile              legacy Python image
+├── docker-compose.yml      prod Rust stack (+ docker-compose.validate.yml)
 └── pyproject.toml
 ```
 
@@ -249,14 +253,50 @@ rows, stats = solve(kids, Config(boats=13))
 - `db._create_tables()` — do not change; migrations are additive ALTER TABLE calls
 - Existing `db.py` function signatures — may be extended but not renamed or changed
 
+## Formal domain spec (Lean 4)
+
+`spec/` is the **formal model of record** for the domain — a Lean 4 library that
+defines the core types and *proves* the invariants the Rust code must uphold
+(levels & ordering, `Config.days`, `validate`'s failure taxonomy + happy-path
+soundness, the authorization gate / no-privilege-escalation). It backs the Rust
+implementation to make agentic changes safer.
+
+- **Before changing domain behaviour in `rust/`, read the matching rule in
+  `spec/` and update it in the same change.** The spec is the source of truth.
+- Verify with `cd spec && lake build` — a green build *is* the proof check.
+- Each theorem has a stable ID (`LVL-*`, `CFG-*`, `VAL-*`, `AUTH-*`); the
+  ID↔Rust traceability table and the Tier-1/Tier-2 binding model are in
+  `spec/README.md`.
+- Scope: only the pure core is formalized (FFI/axum/tokio/yrs are out of reach).
+  Rust is bound to the proven model via conformance vectors
+  (`spec/BoatschedSpec/Conformance.lean`) emitted to
+  `rust/crates/core/tests/conformance_vectors.json` (inside the Docker build
+  context, so the image `cargo test` gate runs it) → checked by
+  `rust/crates/core/tests/conformance.rs` (regen with `cd spec && lake exe
+  gen-vectors > ../rust/crates/core/tests/conformance_vectors.json`).
+- The spec depends on **Mathlib** (one-time `cd spec && lake exe cache get`).
+  Prefer trusted libraries (Mathlib, `Lean.Json`, `serde`) over hand-rolled
+  code; no `sorry`.
+
 ## Deployment
 
-See `README.md` for full Docker and bare-metal Hetzner instructions.
+Production runs the **Rust** server as a **single Docker container**
+(`rust/Dockerfile`, multi-stage `ubuntu:24.04`) on a Hetzner box, behind
+nginx+certbot, managed by `deploy/boatsched-docker.service`. The image bundles a
+version-pinned OR-Tools SDK (9.15.6755, `ubuntu-24.04` build) so it is
+self-contained — the host only needs Docker. The SQLite DB is bind-mounted from
+`/var/lib/boatsched` and reused unchanged (the Rust schema/migrations are
+byte-compatible with the Python DB).
 
-Quick Docker deploy:
+CI/CD (`.forgejo/workflows/deploy.yml`): push to `main` → build+test the image →
+push to the Codeberg registry → SSH to the box → `deploy/deploy.sh`. The cutover
+is **never-break-prod**: backup DB → validate the image against a *copy* on
+`:8001` → single-writer handover on `:8000` → health-gate with **automatic
+rollback**. See `deploy/README.md` for the full runbook.
+
+Quick local run:
 
 ```bash
-docker compose up --build -d
+docker build -t boatsched rust/        # build the image
+docker compose up -d                   # run (needs /etc/boatsched/env + DB dir)
 ```
-
-The `Dockerfile` packages everything into a Python 3.11 image. The database is persisted to the `boatsched_data` named volume at `/data/boatsched.db`.
