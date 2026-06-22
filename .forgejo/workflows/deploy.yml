@@ -27,6 +27,17 @@ jobs:
     env:
       ORTOOLS_ROOT: /opt/or-tools
       DEBIAN_FRONTEND: noninteractive
+      # codeberg-small is a resource-starved shared runner. A cold
+      # `cargo test --workspace` here fans out into a parallel codegen/link wave
+      # on the heavy crates (yrs, axum, OR-Tools FFI) that spikes CPU+RAM enough
+      # to starve act_runner's podman daemon — it then misses the deadline on its
+      # internal control-plane calls (reading /var/run/act/workflow/*) and the job
+      # dies with "context deadline exceeded" right at the end of an otherwise-good
+      # build. Cap parallelism and drop debuginfo to keep peak usage down so the
+      # runner stays responsive. Trades a little wall-time for reliability; the
+      # test gate itself is unchanged.
+      CARGO_BUILD_JOBS: "2"
+      RUSTFLAGS: "-C debuginfo=0"
     steps:
       - name: Install build deps
         run: |
