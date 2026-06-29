@@ -12,7 +12,7 @@
 #      impact on the running service,
 #   4. only then do a single-writer handover on :8000,
 #   5. health-gate the new service; on ANY failure, AUTOMATICALLY roll back to
-#      whatever was running before (Python service, or the previous image).
+#      the previous image.
 #
 # Idempotent. Assumes one-time provisioning is done (see deploy/README.md):
 #   - /opt/boatsched               repo checkout owned by `deploy`
@@ -20,9 +20,9 @@
 #   - registry login (for `docker compose pull`)
 #   - /etc/boatsched/env           secrets + SOLVER_WORKERS (root:deploy 0640)
 #   - /var/lib/boatsched           live DB dir (bind-mounted into the container)
-#   - boatsched-docker.service     installed; Python boatsched.service kept for rollback
+#   - boatsched-docker.service     installed
 #   - sqlite3 + curl on the host
-#   - scoped sudoers: systemctl start/stop for boatsched AND boatsched-docker
+#   - scoped sudoers: systemctl start/stop/restart for boatsched-docker
 
 set -euo pipefail
 
@@ -61,11 +61,9 @@ log "git pull --ff-only"
 git pull --ff-only origin "$BRANCH"
 
 # --- 1. record the pre-deploy state for rollback ----------------------------
-PYTHON_WAS_ACTIVE=0
-if systemctl is-active --quiet boatsched 2>/dev/null; then PYTHON_WAS_ACTIVE=1; fi
-# Image currently backing the prod container (empty on the first/Python cutover).
+# Image currently backing the prod container (empty only on the very first run).
 PREV_IMAGE="$(docker inspect --format '{{.Image}}' boatsched 2>/dev/null || true)"
-log "pre-deploy: python_active=$PYTHON_WAS_ACTIVE prev_image=${PREV_IMAGE:-none}"
+log "pre-deploy: prev_image=${PREV_IMAGE:-none}"
 
 # --- 2. back up the live DB (online, WAL-safe) ------------------------------
 BACKUP="$DB_DIR/pre-cutover-$(date +%Y%m%d-%H%M%S).db"
@@ -121,10 +119,7 @@ validate_cleanup
 trap - EXIT
 
 # --- 5. single-writer handover on :8000 -------------------------------------
-log "Stopping Python service (releases the live DB)"
-sudo systemctl stop boatsched 2>/dev/null || true
-
-log "Starting Rust container service"
+log "Restarting Rust container service (single writer on the live DB)"
 sudo systemctl restart boatsched-docker
 
 # --- 6. health gate + automatic rollback ------------------------------------
@@ -133,20 +128,17 @@ if wait_for_health 8000 "$HEALTH_TIMEOUT"; then
 else
     err "Rust service did NOT become healthy within ${HEALTH_TIMEOUT}s — ROLLING BACK"
     sudo systemctl stop boatsched-docker 2>/dev/null || true
-    if [ "$PYTHON_WAS_ACTIVE" = "1" ]; then
-        err "rollback → Python service"
-        sudo systemctl start boatsched
-    elif [ -n "$PREV_IMAGE" ]; then
+    if [ -n "$PREV_IMAGE" ]; then
         err "rollback → previous image $PREV_IMAGE"
         # Re-point the :latest tag the systemd unit launches back at the known-good
         # image, then restart through systemd so service state stays consistent.
         docker tag "$PREV_IMAGE" "$IMAGE_REF" || true
         sudo systemctl restart boatsched-docker
+        err "rolled back to previous image. DB backup: $BACKUP"
     else
-        err "no known-good previous target; attempting Python service"
-        sudo systemctl start boatsched || true
+        err "no known-good previous image to roll back to (first deploy?)."
+        err "service left stopped. DB backup: $BACKUP"
     fi
-    err "rolled back. DB backup: $BACKUP"
     exit 1
 fi
 

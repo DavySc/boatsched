@@ -59,8 +59,8 @@ services:
       retries: 3
       start_period: 10s
 
-    # OR-Tools maps executable memory — do NOT add a seccomp/no-exec profile that
-    # blocks it (mirrors the MemoryDenyWriteExecute note in boatsched.service).
+    # OR-Tools maps executable memory — do NOT add a seccomp/no-exec profile (or
+    # MemoryDenyWriteExecute-style restriction) that blocks executable mmap.
     logging:
       driver: json-file
       options:
