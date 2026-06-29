@@ -23,7 +23,8 @@ def rank : Level → Nat
   | B => 3
 
 /-- Stored string form used by the DB and JSON API. -/
-def toStr : Level → String
+instance : ToString Level where
+  toString
   | k => "k"
   | b => "b"
   | A => "A"
@@ -40,8 +41,8 @@ def parse : String → Option Level
 /-- The four levels, low -> high. Mirrors `EnrollmentLevel::ALL`. -/
 def all : List Level := [k, b, A, B]
 
-/-- [LVL-1] `parse` is a left inverse of `toStr` (round-trip). -/
-theorem parse_toStr (l : Level) : parse l.toStr = some l := by
+/-- [LVL-1] `parse` is a left inverse of `toString` (round-trip). -/
+theorem parse_toStr (l : Level) : parse (toString l) = some l := by
   cases l <;> rfl
 
 /-- [LVL-2] Ranks are strictly increasing: k < b < A < B. -/
