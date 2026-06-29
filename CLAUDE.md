@@ -1,75 +1,86 @@
 # CLAUDE.md
-claude --resume 3f74bae1-11a5-49f1-b98d-cb61742a354b
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+The application is a **Rust** server (Axum) serving a single embedded SPA. The
+`spec/` directory is the **Lean 4 formal model of record** backing the Rust
+implementation (see "Formal domain spec" below).
 
 ## Repository layout
 
 ```
 boatsched/
-├── src/boatsched/     Python package
-│   ├── solver.py      CP-SAT model — DO NOT MODIFY
-│   ├── roster.py      roster ingestion — DO NOT MODIFY
-│   ├── cli.py         CLI entry point — DO NOT MODIFY
-│   ├── db.py          SQLite helpers
-│   ├── server.py      FastAPI app factory
-│   └── viewer.html    Unified SPA (optimizer + eval tracker, embedded asset)
-├── tests/
-├── rust/                   Rust rewrite (workspace; prod artifact)
-│   └── Dockerfile          multi-stage image (binary + OR-Tools SDK)
+├── rust/                          Rust workspace — the production artifact
+│   ├── crates/core                domain types + invariants (EnrollmentLevel, Config, validate)
+│   ├── crates/roster              roster CSV ingestion
+│   ├── crates/db                  SQLite access (rusqlite) + idempotent migrations
+│   ├── crates/solver              OR-Tools CP-SAT model via C++ FFI shim
+│   ├── crates/auth                sessions, scrypt passwords, rate-limiting
+│   ├── crates/server              Axum HTTP + WebSocket app (binary: boatsched-server)
+│   ├── Dockerfile                 multi-stage image (binary + pinned OR-Tools SDK)
+│   └── docker-entrypoint.sh       forwards SOLVER_WORKERS → --workers
+├── src/boatsched/
+│   └── viewer.html                Unified SPA (optimizer + eval tracker) — embedded
+│                                  into the server binary at compile time
+├── spec/                          Lean 4 formal model of record (backs Rust)
+├── examples/roster_52.csv         sample roster (used by the solver benchmark)
 ├── deploy/
 │   ├── nginx.conf
-│   ├── boatsched.service          legacy Python systemd unit (rollback target)
 │   ├── boatsched-docker.service   prod: Docker container via compose
 │   └── deploy.sh                  never-break-prod cutover (validate + auto-rollback)
-├── Dockerfile              legacy Python image
-├── docker-compose.yml      prod Rust stack (+ docker-compose.validate.yml)
-└── pyproject.toml
+└── docker-compose.yml             prod Rust stack (+ docker-compose.validate.yml)
 ```
 
-## Setup
+## Setup & commands
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"    # includes pytest, httpx, pytest-asyncio
-```
-
-## Commands
-
-```bash
-# Run all tests
-pytest
+# Run the full test suite (this is the CI gate)
+cd rust && cargo test --workspace
 
 # Run a single test
-pytest tests/test_boatsched.py::test_tiny_solve
+cd rust && cargo test -p boatsched-solver solver_parity
 
-# Python backend (serves on :8000)
-boatsched-server --db boatsched.db
+# Run the server natively (serves on :8000)
+cd rust && cargo run -p boatsched-server -- --db boatsched.db
 
-# CLI
-boatsched --roster examples/roster_52.csv --boats 13 --out schedule.csv
-boatsched --counts k=12 b=16 A=12 B=12 --boats 13
+# Build the production image (build context is the REPO ROOT — see below)
+docker build -t boatsched -f rust/Dockerfile .
+
+# Verify the Lean spec (a green build IS the proof check)
+cd spec && lake build
 ```
 
 ## Architecture
 
-### Python package (`src/boatsched/`)
+### Rust workspace (`rust/crates/`)
 
-- **`solver.py`** — core CP-SAT model. `Config` holds all tunables. `staged_solve()` runs stages A→B→C in strict lexicographic order, locking each optimum as a hard constraint before the next stage. `solve()` is the single entry point used by callers and tests.
-- **`roster.py`** — roster ingestion. `load_roster()` reads a file; `parse_roster_bytes()` reads raw bytes for HTTP uploads; `roster_from_counts()` builds a synthetic roster.
-- **`server.py`** — FastAPI app factory. Background solve jobs run in `threading.Thread(daemon=True)`. Serves `viewer.html` at `/`. Signature:
-  ```python
-  create_app(cfg, db_conn=None, *,
-             require_auth=False, secure_cookies=False, session_ttl=12*3600,
-             login_max_failures=20, login_window=300,
-             max_upload_bytes=5*1024*1024, max_ws_message_bytes=1024*1024,
-             min_password_len=1) -> FastAPI
-  ```
-  Every security knob defaults to the permissive/dev value so the test suite is
-  unaffected; `main()` flips them to strict production values whenever `--db` is
-  passed. See **Authentication & hardening** below.
-- **`cli.py`** — thin argparse wrapper around `solve()`.
-- **`db.py`** — all SQLite helpers. Schema is created by `_create_tables()`; migrations are additive ALTER TABLE calls.
+- **`core`** — pure domain core: `EnrollmentLevel` (`k`<`b`<`A`<`B`), `Config`
+  (all solver tunables + day sets), and `validate` (the roster/config failure
+  taxonomy). This is the code bound to the Lean spec via conformance vectors.
+- **`roster`** — roster ingestion (file + raw bytes for HTTP uploads + synthetic
+  from counts).
+- **`solver`** — the CP-SAT model. Runs stages A→B→C in strict lexicographic
+  order, locking each optimum as a hard constraint before the next stage. Calls
+  OR-Tools' C++ engine through an FFI shim (`crates/solver/cpp/`); `build.rs`
+  bakes an rpath to the bundled SDK.
+- **`db`** — all SQLite access (rusqlite). Schema is created with
+  `CREATE TABLE IF NOT EXISTS`; migrations are additive and idempotent. The
+  schema is **byte-compatible** with the legacy Python DB (reused in place).
+- **`auth`** — in-memory session store, scrypt password hashing (byte-compatible
+  with the old hashes), and the per-IP failed-login throttle.
+- **`server`** — the Axum app factory + the binary `boatsched-server`. Serves
+  `viewer.html` at `/` (embedded via `include_str!`), exposes the JSON/WS API,
+  and runs solve jobs on `spawn_blocking`. The binary parses CLI flags (mirroring
+  the documented `boatsched-server` flags) and, whenever `--db` is passed, flips
+  every security knob to its strict production value. See **Authentication &
+  hardening** below.
+
+> **Build inputs outside `rust/`.** The Docker build context is the **repo root**
+> because the server binary embeds two files that live outside `rust/`:
+> `src/boatsched/viewer.html` (`include_str!`) and — for the solver benchmark —
+> `examples/roster_52.csv`. The Dockerfile `COPY`s `viewer.html` into the image
+> so the relative `include_str!` path resolves. Everything else the image needs
+> is under `rust/`.
 
 ### Server routes
 
@@ -162,12 +173,12 @@ skill_result    (member_id, season_id, skill_id, status, note,
 v_level_card    VIEW joining enrollment × skill (live skills) ⟕ skill_result
 ```
 
-Migration functions, all idempotent, run once in `create_app()`:
-`add_yjs_state_column`, `add_start_date_column`, `add_enrollment_tables`,
-`drop_member_level_column` (removes legacy `member.level`),
-`drop_legacy_camp_tables` (drops old `progress_record` / `day_allocation`),
-`add_admin_column`, `auto_grant_first_admin` (promotes all existing instructors
-the first time admin roles appear).
+Migrations, all idempotent, run once at startup: add the `yjs_state`,
+`start_date` and `is_admin` columns; add the enrollment tables; drop the legacy
+`member.level` column; drop the old `progress_record` / `day_allocation` camp
+tables; and promote all existing instructors to admin the first time admin roles
+appear. They are no-ops on a fresh DB and safe to re-run on the byte-compatible
+legacy DB.
 
 #### Levels & membership
 
@@ -176,10 +187,10 @@ the first time admin roles appear).
   mapping helper anymore.
 - viewer.html maps the codes to Dutch labels via `LV_LABEL`
   (`k`=Ketelbinkie, `b`=Bemanning, `A`=A, `B`=B) and colours via `LV_COLOR`.
-- **Roster CSV semantics** (`add_or_update_members`): `'k'`-level rows are new
+- **Roster CSV semantics** (member import): `'k'`-level rows are new
   participants and are auto-created in `member`; every other level must already
-  exist in `member` or a `RuntimeError` is raised (prevents silently dropping
-  returning members from a solve).
+  exist in `member` or an error is raised (prevents silently dropping returning
+  members from a solve).
 
 ### Lexicographic objective (A > B > C)
 
@@ -193,12 +204,12 @@ the first time admin roles appear).
 
 ### Yjs collaborative editing
 
-`/collab/{schedule_id}` implements the y-websocket binary sync protocol (lib0 varint encoding). The server maintains one `pycrdt.Doc` per schedule, lazily loaded from the `yjs_state` BLOB. The Y.Doc model:
+`/collab/{schedule_id}` implements the y-websocket binary sync protocol (lib0 varint encoding). The server maintains one `yrs` doc per schedule (Yjs v1 encoding, wire-compatible with the old pycrdt state), lazily loaded from the `yjs_state` BLOB. The Y.Doc model:
 
 - Map `"schedule"` keyed `"{day}:{boat}"` (e.g. `"Sat:3"`)
 - Each value is a Y.Array of member name strings
 
-On solve completion `_run_job` initialises and persists the Yjs state. "Commit schedule" (`POST /schedule/{id}/commit`) validates the doc and writes to `boat_assignment`.
+On solve completion the job initialises and persists the Yjs state. "Commit schedule" (`POST /schedule/{id}/commit`) validates the doc and writes to `boat_assignment`.
 
 ### Authentication & hardening
 
@@ -215,43 +226,40 @@ create seasons, import/rename/delete members, create instructors, and grant or
 revoke admin. Non-admins may log in, view schedules, edit collaboratively, and
 change their own password. In open mode everyone is treated as admin.
 
-**Production bootstrap.** There is no anonymous window: `main()` seeds the first
-admin from `BOATSCHED_ADMIN` / `BOATSCHED_ADMIN_PW` via `db.ensure_admin()`
+**Production bootstrap.** There is no anonymous window: the server seeds the
+first admin from `BOATSCHED_ADMIN` / `BOATSCHED_ADMIN_PW` at startup
 (idempotent — sets the password only if none exists, so UI changes survive
 restarts).
 
-**Hardening (enabled by `main()` when `--db` is set; see env-var table in
-`README.md`):** `require_auth`, `secure_cookies`, session TTL, per-IP failed-
-login throttle (429), upload size caps (413), WS frame-size guard, `JOBS`
-pruning, generic 500 responses (`_server_error`), security headers in
-middleware, and a `min_password_len` of 8. Tests live in
-`tests/test_security.py`; the deploy configs (`deploy/nginx.conf` TLS + rate
-limits, `deploy/boatsched.service` env-file + sandboxing) complete the picture.
+**Hardening (enabled when `--db` is set; see env-var table in `README.md`):**
+`require_auth`, `secure_cookies`, session TTL, per-IP failed-login throttle
+(429), upload size caps (413), WS frame-size guard, job pruning, generic 500
+responses, security headers in middleware, and a `min_password_len` of 8. The
+`crates/auth` and `crates/server` test modules cover this; the deploy configs
+(`deploy/nginx.conf` TLS + rate limits) complete the picture.
 
-### Public Python API
+### Solver output
 
-```python
-from boatsched import Config, solve, load_roster
+The solver returns the assignment rows `(day, boat, name, level)` plus stats
+`{mixed, distinct, repeats, status_C}` (matching the lexicographic stages
+below). A progress callback streams per-stage results for the live UI.
 
-kids = load_roster("examples/roster_52.csv")
-rows, stats = solve(kids, Config(boats=13))
-# rows: List[Tuple[day, boat_number, name, level]]
-# stats: {"mixed": int, "distinct": int, "repeats": int, "status_C": str}
-```
+### Error categories
 
-`on_progress` is an optional `(label, status_name, value) -> None` callback for streaming stage results.
-
-### Error types
-
-- `ValidationError` — roster/config structurally infeasible
-- `SolveError` — a stage found no solution within its time budget
-- `RosterError` — malformed CSV input
+- **validation** — roster/config structurally infeasible
+- **solve** — a stage found no solution within its time budget
+- **roster** — malformed CSV input
 
 ## Constraints: what NOT to modify
 
-- `solver.py`, `roster.py`, `cli.py` — do not change
-- `db._create_tables()` — do not change; migrations are additive ALTER TABLE calls
-- Existing `db.py` function signatures — may be extended but not renamed or changed
+- **The Lean spec (`spec/`) is the source of truth for the pure domain core.**
+  Before changing domain behaviour in `rust/crates/core` (levels/ordering,
+  `Config`, `validate`, the authorization gate), update the matching rule in
+  `spec/` in the same change and keep `cargo test`'s conformance check green.
+- **Do not change the DB schema shape** — it is byte-compatible with the live
+  production DB. Migrations must stay additive and idempotent.
+- **Never remove or weaken a test/CI gate** (`cargo test --workspace`, the
+  conformance vectors, the on-box build gate) without explicit permission.
 
 ## Formal domain spec (Lean 4)
 
@@ -297,9 +305,8 @@ images and won't accept self-hosted runners — so no registry). The on-box buil
 runs `cargo test` again (gate enforced twice). The cutover is
 **never-break-prod**: backup DB → build → validate the image against a *copy* on
 `:8001` → single-writer handover on `:8000` → health-gate with **automatic
-rollback**. **Never remove a test/CI gate without explicit permission.** See
-`deploy/README.md` for the full runbook and `deploy/CUTOVER_CHECKLIST.md` for the
-live-migration steps.
+rollback** to the previous image. **Never remove a test/CI gate without explicit
+permission.** See `deploy/README.md` for the full runbook.
 
 Quick local run (build context is the repo root — the binary embeds
 `src/boatsched/viewer.html`):

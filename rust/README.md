@@ -116,17 +116,13 @@ exact OPTIMAL objective triples captured from Python.
 
 ### Benchmark
 
-Identical cases run through both implementations:
-
 ```bash
-# Python (read-only; does not modify the implementation)
-../.venv/bin/python bench/py_bench.py ../examples/roster_52.csv
-
-# Rust
 cargo run -p boatsched-solver --release --example bench -- ../examples/roster_52.csv
 ```
 
-Representative run (8 workers, same machine):
+The table below was captured against the legacy Python implementation during the
+rewrite (its `bench/py_bench.py` baseline was removed along with the Python code);
+it is kept as the parity record. Representative run (8 workers, same machine):
 
 | case | mixed | distinct | repeats (py / rs) | status_C | Python | Rust    |
 |------|-------|----------|-------------------|----------|--------|---------|
@@ -174,10 +170,12 @@ pycrdt↔yrs wire compatibility.
 
 ```bash
 cargo run -p boatsched-server --release --example crdt_bench
-../.venv/bin/python bench/py_crdt_bench.py
 ```
 
-Realistic schedule (13 boats × 6 days × 4 kids = 312 entries / 78 keys), per-op:
+The Python (pycrdt) column below was captured during the rewrite (its
+`bench/py_crdt_bench.py` baseline was removed with the Python code) and is kept
+as the parity record. Realistic schedule (13 boats × 6 days × 4 kids = 312
+entries / 78 keys), per-op:
 
 | op | what | Python (pycrdt) | Rust (yrs) | speedup |
 |----|------|-----------------|------------|---------|

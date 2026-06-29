@@ -1,25 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-*.egg
-build/
-dist/
-.eggs/
-
-# venvs
-.venv/
-venv/
-env/
-ENV/
-
-# tooling
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
 # editors / OS
 .vscode/
 .idea/
@@ -35,9 +13,8 @@ schedule.csv
 *.db-shm
 *.db-wal
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
+# Lean build artifacts
+spec/.lake/
 
 # Rust build artifacts
 rust/target/

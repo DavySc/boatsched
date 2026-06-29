@@ -117,12 +117,7 @@ validates on `:8001`.
 
 ## One-time server provisioning (clean box)
 
-This is the **clean-box** path — provisioning a fresh host for the container. If a
-Python boatsched is **already live with data**, do **not** follow this top-to-bottom;
-use [deploy/CUTOVER_CHECKLIST.md](./CUTOVER_CHECKLIST.md), which reuses the existing
-user/DB/env and only adds the Docker delta.
-
-Run as root (or via `sudo`).
+Provisioning a fresh host for the container. Run as root (or via `sudo`).
 
 ### 1. Install Docker + helpers
 
@@ -176,8 +171,8 @@ install -d -o deploy -g deploy /var/lib/boatsched
 install -d -o deploy -g deploy /var/lib/boatsched-validate   # validation copy
 ```
 
-If migrating from the Python deployment, the existing
-`/var/lib/boatsched/boatsched.db` (+ `-wal`/`-shm`) is reused unchanged.
+An existing `/var/lib/boatsched/boatsched.db` (+ `-wal`/`-shm`) is reused
+unchanged across deploys.
 
 ### 6. Env file `/etc/boatsched/env`
 
@@ -208,22 +203,18 @@ chmod 640 /etc/boatsched/env
 ```bash
 cp /opt/boatsched/deploy/boatsched-docker.service /etc/systemd/system/
 systemctl daemon-reload
-# Do NOT enable yet if a Python boatsched.service is currently serving — the
-# first cutover (deploy.sh) performs the handover. For a fresh box:
 systemctl enable --now boatsched-docker
 systemctl status boatsched-docker
 ```
 
 ### 8. Scoped sudoers for the deploy user
 
-`deploy.sh` starts/stops both services (handover + rollback). Grant exactly those.
+`deploy.sh` starts/stops/restarts the container service (handover + rollback).
+Grant exactly those.
 
 ```bash
 cat > /etc/sudoers.d/boatsched-deploy <<'EOF'
-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start boatsched, \
-                            /usr/bin/systemctl stop boatsched, \
-                            /usr/bin/systemctl restart boatsched, \
-                            /usr/bin/systemctl start boatsched-docker, \
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start boatsched-docker, \
                             /usr/bin/systemctl stop boatsched-docker, \
                             /usr/bin/systemctl restart boatsched-docker
 EOF
@@ -242,23 +233,11 @@ Unchanged from before: authorize the CI deploy public key in the `deploy` user's
 
 ---
 
-## nginx + TLS — unchanged
+## nginx + TLS
 
-`deploy/nginx.conf` is **untouched** by this migration: the app still listens on
-`127.0.0.1:8000`, and the `/collab/` WebSocket upgrade + the `X-Real-IP` header
-the app reads for login rate-limiting are the same. If nginx is already
-configured for the Python deployment, **no nginx change is required.**
-
----
-
-## Migrating from a live Python deployment (first cutover)
-
-The provisioning above is the **clean-box** path. If a Python boatsched is
-**already running with live data**, follow the dedicated step-by-step runbook
-instead — it covers only the delta (the box is already provisioned for Python) and
-the safe, never-break-prod handover:
-
-➡️ **[deploy/CUTOVER_CHECKLIST.md](./CUTOVER_CHECKLIST.md)**
+`deploy/nginx.conf`: the app listens on `127.0.0.1:8000`, with the `/collab/`
+WebSocket upgrade and the `X-Real-IP` header the app reads for login
+rate-limiting. nginx is the only public listener and terminates TLS.
 
 ---
 
@@ -276,10 +255,10 @@ the safe, never-break-prod handover:
    - **validates** the image on `:8001` against a DB **copy** (health, `GET /`,
      and an admin login that exercises DB read + scrypt) — aborts here, prod
      untouched, if anything fails,
-   - **handover**: `systemctl stop boatsched` (Python releases the DB) →
-     `systemctl restart boatsched-docker` (container opens the live DB on `:8000`),
-   - **health-gates** `:8000`; on failure **auto-rolls back** to the Python
-     service or the previous image,
+   - **handover**: `systemctl restart boatsched-docker` (container opens the
+     live DB on `:8000` as the single writer),
+   - **health-gates** `:8000`; on failure **auto-rolls back** to the previous
+     image,
    - prunes dangling images and prints the deployed image + DB backup path.
 
 There is **no separate migration step** — the Rust server runs idempotent schema
@@ -290,11 +269,7 @@ migrations at startup, so a (re)start applies any schema changes.
 ## Manual rollback
 
 ```bash
-# Back to Python (if still installed):
-sudo systemctl stop boatsched-docker
-sudo systemctl start boatsched
-
-# Or to the previous image:
+# Roll back to a previous image:
 docker tag <previous-image-id> codeberg.org/oventosti/boatsched:latest
 sudo systemctl restart boatsched-docker
 ```

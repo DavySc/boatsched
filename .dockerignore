@@ -12,15 +12,6 @@ rust/vendor/
 *.db-shm
 *.db-wal
 
-# Python tooling / build artifacts — irrelevant to the Rust image.
-.venv/
-__pycache__/
-**/__pycache__/
-.pytest_cache/
-.coverage
-htmlcov/
-*.egg-info/
-
 # Lean build artifacts.
 spec/.lake/
 
