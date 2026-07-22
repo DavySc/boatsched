@@ -214,25 +214,28 @@ impl Authenticator {
     /// True when `mid` is an admin instructor, or when in open mode. Mirrors
     /// `_member_is_admin`.
     pub fn member_is_admin(&self, mid: Option<i64>, db: Option<&Connection>) -> bool {
-        if self.is_open(db) {
-            return true;
-        }
-        let (Some(mid), Some(conn)) = (mid, db) else {
-            return false;
+        let open = self.is_open(db);
+        // The raw `instructor.is_admin` flag, consulted only when not open. This
+        // is the effectful shell: resolve the inputs (open mode + DB flag), then
+        // let the verified `core::authz::can_perform` make the decision.
+        let raw_admin = if open {
+            false
+        } else {
+            match (mid, db) {
+                // A leaked `OPEN_MODE_MEMBER` (0) outside open mode is never an admin.
+                (Some(mid), Some(conn)) if mid != OPEN_MODE_MEMBER => conn
+                    .query_row(
+                        "SELECT is_admin FROM instructor WHERE member_id=?",
+                        [mid],
+                        |r| r.get::<_, i64>(0).map(|v| v != 0),
+                    )
+                    .optional()
+                    .unwrap_or(None)
+                    .unwrap_or(false),
+                _ => false,
+            }
         };
-        if mid == OPEN_MODE_MEMBER {
-            // Not open mode (checked above) but a 0 leaked in — never an admin.
-            return false;
-        }
-        let is_admin: Option<bool> = conn
-            .query_row(
-                "SELECT is_admin FROM instructor WHERE member_id=?",
-                [mid],
-                |r| r.get::<_, i64>(0).map(|v| v != 0),
-            )
-            .optional()
-            .unwrap_or(None);
-        is_admin.unwrap_or(false)
+        boatsched_core::authz::can_perform(open, raw_admin)
     }
 
     // --- capability construction ---------------------------------------------
@@ -365,10 +368,15 @@ fn base64_urlsafe_nopad(input: &[u8]) -> String {
 /// `caller` is the acting admin (from the [`AdminCtx`]); `target` is the
 /// instructor whose admin flag is being set to `is_admin`.
 pub fn guard_set_admin(caller: &AdminCtx, target: i64, is_admin: bool) -> Result<(), AuthError> {
-    if caller.acting_member() == target && !is_admin {
-        return Err(AuthError::CannotRemoveOwnAdmin);
-    }
-    Ok(())
+    // Delegate the pure self-revoke rule to the verified core predicate; this
+    // shell only unwraps the capability and re-maps the error type.
+    boatsched_core::authz::guard_set_admin(caller.acting_member(), target, is_admin).map_err(|e| {
+        match e {
+            boatsched_core::authz::SetAdminError::CannotRemoveOwnAdmin => {
+                AuthError::CannotRemoveOwnAdmin
+            }
+        }
+    })
 }
 
 #[cfg(test)]

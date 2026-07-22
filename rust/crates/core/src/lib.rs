@@ -11,6 +11,8 @@
 
 use thiserror::Error;
 
+pub mod authz;
+
 /// A participant: `(name, level)` where `level` is a label from `Config.levels`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kid {
@@ -73,71 +75,182 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Ordered day list: `restricted` followed by `diverse`. The order fixes
-    /// the day index used throughout the solver, so it must not change.
+    /// The float-free projection of this config that the formally-verified
+    /// domain core ([`validate`], [`ProblemConfig::days`]) operates on. The
+    /// solver-timing fields (`stage_seconds`, `seconds`, `workers`) are dropped
+    /// because Aeneas's `F64` cannot appear in an extracted `struct`; only
+    /// [`ProblemConfig`] crosses the verification boundary.
+    pub fn problem(&self) -> ProblemConfig {
+        ProblemConfig {
+            boats: self.boats,
+            levels: self.levels.clone(),
+            restricted: self.restricted.clone(),
+            diverse: self.diverse.clone(),
+            adj: self.adj,
+        }
+    }
+
+    /// Ordered day list: `restricted` followed by `diverse`. Delegates to the
+    /// verified [`ProblemConfig::days`] so the solver and the proof share one
+    /// definition. The order fixes the day index used throughout the solver, so
+    /// it must not change.
     pub fn days(&self) -> Vec<String> {
-        let mut d = self.restricted.clone();
-        d.extend(self.diverse.iter().cloned());
-        d
+        self.problem().days()
     }
 }
 
-/// The roster/config combination is structurally infeasible.
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("{0}")]
-pub struct ValidationError(pub String);
+/// The float-free subset of [`Config`] that the formally-verified domain core
+/// operates on. Aeneas cannot represent `f64` inside an extracted `struct`, so
+/// the solver-timing fields live only on [`Config`]; everything the
+/// roster/config *validation* and day-ordering logic needs lives here and is
+/// provable against `spec/BoatschedSpec` (see EXT-VAL).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProblemConfig {
+    /// May be <= 0 so that [`validate`] can reject it (parity with Python).
+    pub boats: i64,
+    pub levels: Vec<String>,
+    pub restricted: Vec<String>,
+    pub diverse: Vec<String>,
+    pub adj: i64,
+}
+
+impl Default for ProblemConfig {
+    fn default() -> Self {
+        // Mirrors the problem fields of `Config::default`.
+        ProblemConfig {
+            boats: 13,
+            levels: svec(&["k", "b", "A", "B"]),
+            restricted: svec(&["Sat", "Sun", "Tue", "Wed"]),
+            diverse: svec(&["Fri", "Mon"]),
+            adj: 1,
+        }
+    }
+}
+
+impl ProblemConfig {
+    /// Ordered day list: `restricted` followed by `diverse`. Written as explicit
+    /// index loops (no iterator combinators) so Aeneas can extract it.
+    pub fn days(&self) -> Vec<String> {
+        let mut d: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < self.restricted.len() {
+            d.push(self.restricted[i].clone());
+            i += 1;
+        }
+        let mut j = 0;
+        while j < self.diverse.len() {
+            d.push(self.diverse[j].clone());
+            j += 1;
+        }
+        d
+    }
+
+    /// Is `level` one of the configured solver levels? Explicit loop (no
+    /// `HashSet`/iterator) so it extracts cleanly; the single `String`
+    /// comparison is the one opaque external Aeneas emits (modelled `a == b`).
+    fn knows_level(&self, level: &String) -> bool {
+        let mut i = 0;
+        while i < self.levels.len() {
+            if self.levels[i] == *level {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// The levels of kids whose level is not configured, **in kid order, with
+    /// duplicates and without sorting** — matching the Lean model's
+    /// `kids.filterMap`, which the refinement proof (EXT-VAL) depends on.
+    fn unknown_levels(&self, kids: &[Kid]) -> Vec<String> {
+        let mut bad: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < kids.len() {
+            if !self.knows_level(&kids[i].level) {
+                bad.push(kids[i].level.clone());
+            }
+            i += 1;
+        }
+        bad
+    }
+}
+
+/// The roster/config combination is structurally infeasible. The variants
+/// mirror the Lean taxonomy in `spec/BoatschedSpec/Validate.lean`
+/// (`ValidationError`) exactly — the refinement proof (EXT-VAL) maps one onto
+/// the other. Human-readable text lives in the `Display` impl **outside** the
+/// Aeneas verification boundary; callers/tests match on the substrings "day",
+/// "positive", "divisible", "unknown".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationError {
+    /// No restricted or diverse days configured (the first guard).
+    NoDays,
+    /// `boats <= 0`.
+    BoatsNotPositive,
+    /// Roster size (`kids`) is not divisible by `boats`.
+    NotDivisible { kids: i64, boats: i64 },
+    /// One or more kids carry a level not in `Config.levels`, listed in kid
+    /// order (with duplicates), matching the Lean model's `kids.filterMap`.
+    UnknownLevels(Vec<String>),
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidationError::NoDays => {
+                write!(f, "need at least one restricted or diverse day")
+            }
+            ValidationError::BoatsNotPositive => write!(f, "boats must be positive"),
+            ValidationError::NotDivisible { kids, boats } => {
+                write!(f, "{kids} kids not divisible by {boats} boats")
+            }
+            ValidationError::UnknownLevels(bad) => {
+                let listed = bad
+                    .iter()
+                    .map(|l| format!("'{l}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "unknown level(s) [{listed}]")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
 
 /// A lexicographic stage found no solution within its time budget.
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("{0}")]
 pub struct SolveError(pub String);
 
-/// Validate the roster/config. Error messages mirror the Python originals
-/// (`tests/test_solver.py` matches the substrings "day", "positive",
-/// "unknown").
-pub fn validate(kids: &[Kid], cfg: &Config) -> Result<(), ValidationError> {
+/// Validate the roster/config. Returns the first failure reason (typed), or
+/// `Ok(())`. Written in an Aeneas-extractable style (index loops, no
+/// `HashSet`/`format!`/`sort`/iterators) and taking the float-free
+/// [`ProblemConfig`]; this is the function bound to the Lean model
+/// `Boatsched.validate` by the EXT-VAL refinement proof. The check order —
+/// days, boats, divisibility, unknown levels — is load-bearing (callers and the
+/// spec depend on it).
+pub fn validate(kids: &[Kid], cfg: &ProblemConfig) -> Result<(), ValidationError> {
     if cfg.days().is_empty() {
-        return Err(ValidationError(
-            "need at least one restricted or diverse day".into(),
-        ));
+        return Err(ValidationError::NoDays);
     }
     if cfg.boats <= 0 {
-        return Err(ValidationError("boats must be positive".into()));
+        return Err(ValidationError::BoatsNotPositive);
     }
     // len(kids) % boats != 0  (boats > 0 here)
     let n = kids.len() as i64;
     if n % cfg.boats != 0 {
-        return Err(ValidationError(format!(
-            "{} kids not divisible by {} boats",
-            kids.len(),
-            cfg.boats
-        )));
+        return Err(ValidationError::NotDivisible {
+            kids: n,
+            boats: cfg.boats,
+        });
     }
-    let known: std::collections::HashSet<&str> = cfg.levels.iter().map(String::as_str).collect();
-    let mut bad: Vec<&str> = kids
-        .iter()
-        .map(|k| k.level.as_str())
-        .filter(|l| !known.contains(l))
-        .collect();
-    bad.sort_unstable();
-    bad.dedup();
-    if !bad.is_empty() {
-        let bad_fmt = bad
-            .iter()
-            .map(|l| format!("'{l}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let known_fmt = cfg
-            .levels
-            .iter()
-            .map(|l| format!("'{l}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(ValidationError(format!(
-            "unknown level(s) [{bad_fmt}]; known levels are [{known_fmt}]"
-        )));
+    let bad = cfg.unknown_levels(kids);
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError::UnknownLevels(bad))
     }
-    Ok(())
 }
 
 /// The fixed enrollment-level enum, ordered low→high. Mirrors the DB
@@ -255,8 +368,8 @@ mod tests {
             diverse: vec![],
             ..Default::default()
         };
-        let err = validate(&kids, &cfg).unwrap_err();
-        assert!(err.0.contains("day"), "msg: {}", err.0);
+        let err = validate(&kids, &cfg.problem()).unwrap_err();
+        assert!(matches!(err, ValidationError::NoDays), "err: {err:?}");
     }
 
     #[test]
@@ -267,8 +380,11 @@ mod tests {
             levels: svec(&["k"]),
             ..Default::default()
         };
-        let err = validate(&kids, &cfg).unwrap_err();
-        assert!(err.0.contains("positive"), "msg: {}", err.0);
+        let err = validate(&kids, &cfg.problem()).unwrap_err();
+        assert!(
+            matches!(err, ValidationError::BoatsNotPositive),
+            "err: {err:?}"
+        );
     }
 
     #[test]
@@ -279,7 +395,7 @@ mod tests {
             levels: svec(&["k"]),
             ..Default::default()
         };
-        assert!(validate(&kids, &cfg).is_err());
+        assert!(validate(&kids, &cfg.problem()).is_err());
     }
 
     #[test]
@@ -290,7 +406,7 @@ mod tests {
             levels: svec(&["k"]),
             ..Default::default()
         };
-        assert!(validate(&kids, &cfg).is_err());
+        assert!(validate(&kids, &cfg.problem()).is_err());
     }
 
     #[test]
@@ -301,8 +417,11 @@ mod tests {
             levels: svec(&["k"]),
             ..Default::default()
         };
-        let err = validate(&kids, &cfg).unwrap_err();
-        assert!(err.0.contains("unknown"), "msg: {}", err.0);
+        let err = validate(&kids, &cfg.problem()).unwrap_err();
+        assert!(
+            matches!(err, ValidationError::UnknownLevels(_)),
+            "err: {err:?}"
+        );
     }
 
     #[test]
@@ -313,7 +432,7 @@ mod tests {
             levels: svec(&["k", "b"]),
             ..Default::default()
         };
-        assert!(validate(&kids, &cfg).is_ok());
+        assert!(validate(&kids, &cfg.problem()).is_ok());
     }
 
     // ---- EnrollmentLevel ----
