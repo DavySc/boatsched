@@ -272,19 +272,28 @@ implementation to make agentic changes safer.
 - **Before changing domain behaviour in `rust/`, read the matching rule in
   `spec/` and update it in the same change.** The spec is the source of truth.
 - Verify with `cd spec && lake build` — a green build *is* the proof check.
-- Each theorem has a stable ID (`LVL-*`, `CFG-*`, `VAL-*`, `AUTH-*`); the
+- Each theorem has a stable ID (`LVL-*`, `CFG-*`, `VAL-*`, `AUTH-*`, `EXT-*`); the
   ID↔Rust traceability table and the Tier-1/Tier-2 binding model are in
   `spec/README.md`.
 - Scope: only the pure core is formalized (FFI/axum/tokio/yrs are out of reach).
-  Rust is bound to the proven model via conformance vectors
-  (`spec/BoatschedSpec/Conformance.lean`) emitted to
-  `rust/crates/core/tests/conformance_vectors.json` (inside the Docker build
-  context, so the image `cargo test` gate runs it) → checked by
-  `rust/crates/core/tests/conformance.rs` (regen with `cd spec && lake exe
-  gen-vectors > ../rust/crates/core/tests/conformance_vectors.json`).
-- The spec depends on **Mathlib** (one-time `cd spec && lake exe cache get`).
-  Prefer trusted libraries (Mathlib, `Lean.Json`, `serde`) over hand-rolled
-  code; no `sorry`.
+  **Two binding tiers:**
+  - **Tier 1 — conformance vectors** (all of `core`): the proven oracle
+    (`spec/BoatschedSpec/Conformance.lean`) is emitted to
+    `rust/crates/core/tests/conformance_vectors.json` (inside the Docker build
+    context, so the image `cargo test` gate runs it) → checked by
+    `rust/crates/core/tests/conformance.rs` (regen with `cd spec && lake exe
+    gen-vectors > ../rust/crates/core/tests/conformance_vectors.json`).
+  - **Tier 2 — Charon+Aeneas refinement** (`validate` + `authz` only): the
+    *real* Rust functions are extracted to `spec/BoatschedExtract/` and **proven
+    to refine the spec for all inputs, panic-free** (`EXT-VAL`, `EXT-AUTH`). This
+    is why `validate`/`ProblemConfig`/`authz` are written in an extraction-friendly
+    style (index loops, no iterators/`HashSet`/`format!`, float-free
+    `ProblemConfig`) — **keep them that way**, and if you change a verified
+    function, re-extract the model (see `spec/README.md`) and keep `lake build`
+    green. Everything Tier-2 covers is also covered by Tier 1.
+- The spec depends on **Mathlib** + (for Tier 2) **Aeneas**; `cd spec && lake
+  build` is gated in CI by the `verify-spec` job. Prefer trusted libraries
+  (Mathlib, `Lean.Json`, `serde`) over hand-rolled code; no `sorry`.
 
 ## Deployment
 
