@@ -18,7 +18,7 @@
       charon cargo --preset=aeneas --start-from 'boatsched_core::validate' \
         --start-from 'boatsched_core::authz::can_perform' \
         --start-from 'boatsched_core::authz::guard_set_admin'
-      aeneas -backend lean -split-files -subdir BoatschedExtract -dest <spec> boatsched_core.llbc
+      aeneas -backend lean -split-files -loops-to-rec -subdir BoatschedExtract -dest <spec> boatsched_core.llbc
 -/
 import BoatschedExtract.Types
 import BoatschedExtract.Funs

@@ -42,14 +42,13 @@ def authz.guard_set_admin
     else ok (core.result.Result.Err authz.SetAdminError.CannotRemoveOwnAdmin)
   else ok (core.result.Result.Ok ())
 
-/-- [boatsched_core::{boatsched_core::ProblemConfig}::days]: loop body 0:
+/-- [boatsched_core::{boatsched_core::ProblemConfig}::days]: loop 0:
     Source: 'src/lib.rs', lines 136:8-139:9
     Visibility: public -/
-@[rust_loop_body]
-def ProblemConfig.days_loop0.body
+@[rust_loop]
+def ProblemConfig.days_loop0
   (self : ProblemConfig) (d : alloc.vec.Vec String) (i : Std.Usize) :
-  Result (ControlFlow ((alloc.vec.Vec String) × Std.Usize) ((alloc.vec.Vec
-    String) × (alloc.vec.Vec String)))
+  Result ((alloc.vec.Vec String) × (alloc.vec.Vec String))
   := do
   let i1 := alloc.vec.Vec.len self.restricted
   if i < i1
@@ -60,40 +59,9 @@ def ProblemConfig.days_loop0.body
     let s1 ← alloc.string.String.Insts.CoreCloneClone.clone s
     let d1 ← alloc.vec.Vec.push d s1
     let i2 ← i + 1#usize
-    ok (cont (d1, i2))
-  else ok (done (self.diverse, d))
-
-/-- [boatsched_core::{boatsched_core::ProblemConfig}::days]: loop 0:
-    Source: 'src/lib.rs', lines 136:8-139:9
-    Visibility: public -/
-@[rust_loop]
-def ProblemConfig.days_loop0
-  (self : ProblemConfig) (d : alloc.vec.Vec String) (i : Std.Usize) :
-  Result ((alloc.vec.Vec String) × (alloc.vec.Vec String))
-  := do
-  loop
-    (fun (d1, i1) => ProblemConfig.days_loop0.body self d1 i1)
-    (d, i)
-
-/-- [boatsched_core::{boatsched_core::ProblemConfig}::days]: loop body 1:
-    Source: 'src/lib.rs', lines 141:8-144:9
-    Visibility: public -/
-@[rust_loop_body]
-def ProblemConfig.days_loop1.body
-  (v : alloc.vec.Vec String) (d : alloc.vec.Vec String) (j : Std.Usize) :
-  Result (ControlFlow ((alloc.vec.Vec String) × Std.Usize) (alloc.vec.Vec
-    String))
-  := do
-  let i := alloc.vec.Vec.len v
-  if j < i
-  then
-    let s ←
-      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice String) v j
-    let s1 ← alloc.string.String.Insts.CoreCloneClone.clone s
-    let d1 ← alloc.vec.Vec.push d s1
-    let j1 ← j + 1#usize
-    ok (cont (d1, j1))
-  else ok (done d)
+    ProblemConfig.days_loop0 self d1 i2
+  else ok (self.diverse, d)
+partial_fixpoint
 
 /-- [boatsched_core::{boatsched_core::ProblemConfig}::days]: loop 1:
     Source: 'src/lib.rs', lines 141:8-144:9
@@ -103,9 +71,17 @@ def ProblemConfig.days_loop1
   (v : alloc.vec.Vec String) (d : alloc.vec.Vec String) (j : Std.Usize) :
   Result (alloc.vec.Vec String)
   := do
-  loop
-    (fun (d1, j1) => ProblemConfig.days_loop1.body v d1 j1)
-    (d, j)
+  let i := alloc.vec.Vec.len v
+  if j < i
+  then
+    let s ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice String) v j
+    let s1 ← alloc.string.String.Insts.CoreCloneClone.clone s
+    let d1 ← alloc.vec.Vec.push d s1
+    let j1 ← j + 1#usize
+    ProblemConfig.days_loop1 v d1 j1
+  else ok d
+partial_fixpoint
 
 /-- [boatsched_core::{boatsched_core::ProblemConfig}::days]:
     Source: 'src/lib.rs', lines 133:4-146:5
@@ -116,13 +92,11 @@ def ProblemConfig.days
     ProblemConfig.days_loop0 self (alloc.vec.Vec.new String) 0#usize
   ProblemConfig.days_loop1 v d 0#usize
 
-/-- [boatsched_core::{boatsched_core::ProblemConfig}::knows_level]: loop body 0:
+/-- [boatsched_core::{boatsched_core::ProblemConfig}::knows_level]: loop 0:
     Source: 'src/lib.rs', lines 153:8-160:5 -/
-@[rust_loop_body]
-def ProblemConfig.knows_level_loop.body
-  (self : ProblemConfig) (level : String) (i : Std.Usize) :
-  Result (ControlFlow Std.Usize Bool)
-  := do
+@[rust_loop]
+def ProblemConfig.knows_level_loop
+  (self : ProblemConfig) (level : String) (i : Std.Usize) : Result Bool := do
   let i1 := alloc.vec.Vec.len self.levels
   if i < i1
   then
@@ -131,19 +105,11 @@ def ProblemConfig.knows_level_loop.body
         self.levels i
     let b ← alloc.string.String.Insts.CoreCmpPartialEqString.eq s level
     if b
-    then ok (done true)
+    then ok true
     else let i2 ← i + 1#usize
-         ok (cont i2)
-  else ok (done false)
-
-/-- [boatsched_core::{boatsched_core::ProblemConfig}::knows_level]: loop 0:
-    Source: 'src/lib.rs', lines 153:8-160:5 -/
-@[rust_loop]
-def ProblemConfig.knows_level_loop
-  (self : ProblemConfig) (level : String) (i : Std.Usize) : Result Bool := do
-  loop
-    (fun i1 => ProblemConfig.knows_level_loop.body self level i1)
-    i
+         ProblemConfig.knows_level_loop self level i2
+  else ok false
+partial_fixpoint
 
 /-- [boatsched_core::{boatsched_core::ProblemConfig}::knows_level]:
     Source: 'src/lib.rs', lines 151:4-160:5 -/
@@ -152,23 +118,6 @@ def ProblemConfig.knows_level
   (self : ProblemConfig) (level : String) : Result Bool := do
   ProblemConfig.knows_level_loop self level 0#usize
 
-/-- [boatsched_core::{boatsched_core::ProblemConfig}::all_known]: loop body 0:
-    Source: 'src/lib.rs', lines 170:8-177:5 -/
-@[rust_loop_body]
-def ProblemConfig.all_known_loop.body
-  (self : ProblemConfig) (kids : Slice Kid) (n : Std.Usize) (i : Std.Usize) :
-  Result (ControlFlow Std.Usize Bool)
-  := do
-  if i < n
-  then
-    let k ← Slice.index_usize kids i
-    let b ← ProblemConfig.knows_level self k.level
-    if b
-    then let i1 ← i + 1#usize
-         ok (cont i1)
-    else ok (done false)
-  else ok (done true)
-
 /-- [boatsched_core::{boatsched_core::ProblemConfig}::all_known]: loop 0:
     Source: 'src/lib.rs', lines 170:8-177:5 -/
 @[rust_loop]
@@ -176,9 +125,16 @@ def ProblemConfig.all_known_loop
   (self : ProblemConfig) (kids : Slice Kid) (i : Std.Usize) (n : Std.Usize) :
   Result Bool
   := do
-  loop
-    (fun i1 => ProblemConfig.all_known_loop.body self kids n i1)
-    i
+  if i < n
+  then
+    let k ← Slice.index_usize kids i
+    let b ← ProblemConfig.knows_level self k.level
+    if b
+    then let i1 ← i + 1#usize
+         ProblemConfig.all_known_loop self kids i1 n
+    else ok false
+  else ok true
+partial_fixpoint
 
 /-- [boatsched_core::{boatsched_core::ProblemConfig}::all_known]:
     Source: 'src/lib.rs', lines 167:4-177:5 -/
