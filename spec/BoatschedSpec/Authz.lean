@@ -52,4 +52,32 @@ theorem open_mode_grants (s : AuthState) (m : MemberId) (a : GatedAction)
 -- TODO [AUTH-3]: `set-admin` is monotone — granting admin never removes an
 -- existing permission. Stated in README.md as the next authz proof.
 
+/-- Why a `set-admin` request is refused. Mirrors Rust
+    `boatsched_core::authz::SetAdminError`. -/
+inductive SetAdminError where
+  | cannotRemoveOwnAdmin
+  deriving DecidableEq, Repr
+
+/-- The `set-admin` self-revoke guard: an admin may not revoke their **own**
+    admin status (lockout protection). `caller` acts; `target`'s flag becomes
+    `grant`. Mirrors Rust `boatsched_core::authz::guard_set_admin`. -/
+def guardSetAdmin (caller target : MemberId) (grant : Bool) :
+    Except SetAdminError Unit :=
+  if caller = target ∧ grant = false then
+    .error .cannotRemoveOwnAdmin
+  else
+    .ok ()
+
+/-- [AUTH-4] The guard refuses **exactly** the self-revoke case. -/
+theorem guardSetAdmin_denied_iff (caller target : MemberId) (grant : Bool) :
+    guardSetAdmin caller target grant = .error .cannotRemoveOwnAdmin
+      ↔ (caller = target ∧ grant = false) := by
+  unfold guardSetAdmin
+  split <;> simp_all
+
+/-- [AUTH-5] An admin can always (re)grant, including to themselves. -/
+theorem guardSetAdmin_grant_ok (caller target : MemberId) :
+    guardSetAdmin caller target true = .ok () := by
+  simp [guardSetAdmin]
+
 end Boatsched

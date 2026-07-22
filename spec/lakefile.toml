@@ -1,6 +1,6 @@
 name = "boatsched-spec"
 version = "0.1.0"
-defaultTargets = ["BoatschedSpec"]
+defaultTargets = ["BoatschedSpec", "BoatschedExtract"]
 
 # Formal domain model of boatsched, backing the Rust implementation under
 # ../rust. See README.md for the architecture and the Rust conformance bridge.
@@ -12,8 +12,23 @@ name = "mathlib"
 git = "https://github.com/leanprover-community/mathlib4"
 rev = "v4.31.0"
 
+# Aeneas' Lean backend library (package `Aeneas`, under `backends/lean`). Ships
+# prebuilt oleans at this tag (preferReleaseBuild) and pins the SAME lean4
+# v4.31.0 + Mathlib v4.31.0 as this spec, so the dependency graph is consistent.
+# Used only by the `BoatschedExtract` lib (the Charon+Aeneas model + refinement).
+[[require]]
+name = "aeneas"
+git = "https://github.com/AeneasVerif/aeneas"
+rev = "nightly-2026.07.21-a827e6f"
+subDir = "backends/lean"
+
 [[lean_lib]]
 name = "BoatschedSpec"
+
+# The Aeneas-extracted model of the real `rust/crates/core` + the refinement
+# proofs binding it to `BoatschedSpec` (Tier-2). See BoatschedExtract.lean.
+[[lean_lib]]
+name = "BoatschedExtract"
 
 # Regenerate the Rust bridge with:
 #   lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.json
