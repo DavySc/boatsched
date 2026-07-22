@@ -45,7 +45,7 @@ fn verdict_of(kids: &[Kid], cfg: &ProblemConfig) -> &'static str {
         Err(ValidationError::NoDays) => "noDays",
         Err(ValidationError::BoatsNotPositive) => "boatsNotPositive",
         Err(ValidationError::NotDivisible { .. }) => "notDivisible",
-        Err(ValidationError::UnknownLevels(_)) => "unknownLevels",
+        Err(ValidationError::UnknownLevels) => "unknownLevels",
     }
 }
 

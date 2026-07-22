@@ -159,19 +159,21 @@ impl ProblemConfig {
         false
     }
 
-    /// The levels of kids whose level is not configured, **in kid order, with
-    /// duplicates and without sorting** — matching the Lean model's
-    /// `kids.filterMap`, which the refinement proof (EXT-VAL) depends on.
-    fn unknown_levels(&self, kids: &[Kid]) -> Vec<String> {
-        let mut bad: Vec<String> = Vec::new();
+    /// Are all kids' levels configured? Explicit loop with an early exit (no
+    /// iterator/`HashSet`). A boolean rather than the offending-level list
+    /// because Aeneas cannot join a loop that *conditionally* pushes to an
+    /// owned `Vec`; the decision (not the diagnostic list) is what `validate`
+    /// and the spec need, and this shape extracts and proves cleanly (EXT-VAL).
+    fn all_known(&self, kids: &[Kid]) -> bool {
         let mut i = 0;
-        while i < kids.len() {
+        let n = kids.len();
+        while i < n {
             if !self.knows_level(&kids[i].level) {
-                bad.push(kids[i].level.clone());
+                return false;
             }
             i += 1;
         }
-        bad
+        true
     }
 }
 
@@ -189,9 +191,10 @@ pub enum ValidationError {
     BoatsNotPositive,
     /// Roster size (`kids`) is not divisible by `boats`.
     NotDivisible { kids: i64, boats: i64 },
-    /// One or more kids carry a level not in `Config.levels`, listed in kid
-    /// order (with duplicates), matching the Lean model's `kids.filterMap`.
-    UnknownLevels(Vec<String>),
+    /// One or more kids carry a level not in `Config.levels`. Carries no list:
+    /// see [`ProblemConfig::all_known`] for why the verified core decides this
+    /// as a boolean (mirrors Lean `ValidationError.unknownLevels`).
+    UnknownLevels,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -204,13 +207,8 @@ impl std::fmt::Display for ValidationError {
             ValidationError::NotDivisible { kids, boats } => {
                 write!(f, "{kids} kids not divisible by {boats} boats")
             }
-            ValidationError::UnknownLevels(bad) => {
-                let listed = bad
-                    .iter()
-                    .map(|l| format!("'{l}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(f, "unknown level(s) [{listed}]")
+            ValidationError::UnknownLevels => {
+                write!(f, "unknown level(s) present in roster")
             }
         }
     }
@@ -245,11 +243,10 @@ pub fn validate(kids: &[Kid], cfg: &ProblemConfig) -> Result<(), ValidationError
             boats: cfg.boats,
         });
     }
-    let bad = cfg.unknown_levels(kids);
-    if bad.is_empty() {
+    if cfg.all_known(kids) {
         Ok(())
     } else {
-        Err(ValidationError::UnknownLevels(bad))
+        Err(ValidationError::UnknownLevels)
     }
 }
 
@@ -419,7 +416,7 @@ mod tests {
         };
         let err = validate(&kids, &cfg.problem()).unwrap_err();
         assert!(
-            matches!(err, ValidationError::UnknownLevels(_)),
+            matches!(err, ValidationError::UnknownLevels),
             "err: {err:?}"
         );
     }
