@@ -19,7 +19,7 @@ def verdict : Except ValidationError Unit → String
   | .error .noDays          => "noDays"
   | .error .boatsNotPositive => "boatsNotPositive"
   | .error (.notDivisible _ _) => "notDivisible"
-  | .error (.unknownLevels _)  => "unknownLevels"
+  | .error .unknownLevels      => "unknownLevels"
 
 private def cfg (boats : Int) (levels restricted diverse : List String) : Config :=
   { boats, levels, restricted, diverse, adj := 1 }

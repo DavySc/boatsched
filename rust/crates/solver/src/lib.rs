@@ -89,7 +89,7 @@ pub fn solve(
     mut on_progress: Option<&mut dyn FnMut(&str, &str, i64)>,
 ) -> Result<(Vec<ScheduleRow>, Stats), SolveFailure> {
     // validate() first, mirroring build_model.
-    validate(kids, cfg).map_err(SolveFailure::Validation)?;
+    validate(kids, &cfg.problem()).map_err(SolveFailure::Validation)?;
 
     let days = cfg.days();
     let d = days.len();

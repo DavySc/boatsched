@@ -70,6 +70,56 @@ jobs:
           cd repo/rust
           cargo test --workspace --locked
 
+  verify-spec:
+    # Build the Lean 4 formal spec — this type-checks every definition AND every
+    # proof (a green `lake build` IS the proof check), including the Tier-2
+    # refinement theorems that bind the Aeneas-extracted model of rust/crates/core
+    # to BoatschedSpec (EXT-AUTH/EXT-VAL). Purely additive: it does NOT gate the
+    # deploy job (deploy still `needs: test` only) and does not touch the Rust
+    # build. Make it a REQUIRED check in Codeberg branch protection so a proof
+    # regression blocks merge. See spec/README.md.
+    runs-on: codeberg-small
+    # Mathlib's prebuilt oleans + the Aeneas release build are downloaded, not
+    # compiled, so wall-time is dominated by the cache fetch, not CPU.
+    timeout-minutes: 45
+    container:
+      image: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      # elan/lake honour these; keep the toolchain + caches inside the workspace.
+      ELAN_HOME: /root/.elan
+    steps:
+      - name: Install build deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates git git-lfs
+
+      - name: Checkout (manual; public repo, no Node needed)
+        run: |
+          git clone "${GITHUB_SERVER_URL:-https://codeberg.org}/${GITHUB_REPOSITORY}.git" repo
+          git -C repo checkout "${GITHUB_SHA}"
+
+      - name: Install elan (Lean toolchain manager)
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$ELAN_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch Mathlib cache (prebuilt oleans — download, not compile)
+        run: |
+          export PATH="$ELAN_HOME/bin:$PATH"
+          cd repo/spec
+          # elan auto-installs the toolchain pinned by spec/lean-toolchain.
+          lake exe cache get
+
+      - name: lake build (type-checks all definitions + proofs; downloads Aeneas release build)
+        run: |
+          export PATH="$ELAN_HOME/bin:$PATH"
+          cd repo/spec
+          lake build
+
   deploy:
     needs: test
     # Only deploy on a push to main — never on PRs, and never if `test` failed.
