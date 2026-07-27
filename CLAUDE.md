@@ -6,6 +6,9 @@ The application is a **Rust** server (Axum) serving a single embedded SPA. The
 `spec/` directory is the **Lean 4 formal model of record** backing the Rust
 implementation (see "Formal domain spec" below).
 
+See `docs/ARCHITECTURE.md` for the full system map and a per-change-type
+contributor workflow (which files to touch, in what order, which gates apply).
+
 ## Repository layout
 
 ```

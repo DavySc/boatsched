@@ -43,6 +43,12 @@ compiled directly into the `boatsched-server` binary. The server serves it at
 `/` and exposes the JSON/WebSocket API it calls. See `CLAUDE.md` for the full
 route and schema reference, and `rust/README.md` for implementation notes.
 
+**New to this codebase or about to make a change?** See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for a full system map plus a
+recipe (which files to touch, in what order, which gates you'll trip) for each
+kind of change — domain rules, HTTP routes, DB migrations, the solver, the
+frontend, auth, and CI/CD.
+
 ---
 
 ## Local development
