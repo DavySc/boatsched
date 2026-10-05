@@ -1,0 +1,10 @@
+pub(crate) mod auth;
+pub(crate) mod eval;
+pub(crate) mod instructors;
+pub(crate) mod levels;
+pub(crate) mod members;
+pub(crate) mod misc;
+pub(crate) mod schedule;
+pub(crate) mod seasons;
+pub(crate) mod solve;
+pub(crate) mod ws;

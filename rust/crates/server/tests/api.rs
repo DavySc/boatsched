@@ -853,8 +853,10 @@ async fn solve_rejects_bad_roster() {
 /// A db with season 1 + an enrolled non-instructor student "Kid" (member 1).
 fn app_with_student() -> Router {
     let conn = mem_conn();
-    conn.execute("INSERT INTO season (year) VALUES (2026)", []).unwrap();
-    conn.execute("INSERT INTO member (name) VALUES ('Kid')", []).unwrap();
+    conn.execute("INSERT INTO season (year) VALUES (2026)", [])
+        .unwrap();
+    conn.execute("INSERT INTO member (name) VALUES ('Kid')", [])
+        .unwrap();
     conn.execute(
         "INSERT INTO enrollment (member_id, season_id, level) VALUES (1, 1, 'k')",
         [],
@@ -871,7 +873,10 @@ async fn skills_catalog_shape() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     let j = r.json();
     let k = &j["levels"]["k"];
-    assert!(k.is_array() && !k.as_array().unwrap().is_empty(), "level k present");
+    assert!(
+        k.is_array() && !k.as_array().unwrap().is_empty(),
+        "level k present"
+    );
     let cat0 = &k[0];
     assert!(cat0["category"].is_string());
     assert!(cat0["eval_type"].is_string());
@@ -881,13 +886,17 @@ async fn skills_catalog_shape() {
 #[tokio::test]
 async fn nonadmin_instructor_can_save_and_read_progress() {
     let app = app_with_student();
-    let admin = bootstrap_admin(&app).await;          // member 2 (instructor/admin)
+    let admin = bootstrap_admin(&app).await; // member 2 (instructor/admin)
     create_nonadmin(&app, &admin, "Bob", "bobpw").await; // member 3 (instructor)
     let bob = login(&app, "Bob", "bobpw").await;
 
     // A standard skill id from the catalog.
-    let skills = send(&app, "GET", "/api/skills", Some(&bob), None).await.json();
-    let skill_id = skills["levels"]["k"][0]["skills"][0]["id"].as_i64().unwrap();
+    let skills = send(&app, "GET", "/api/skills", Some(&bob), None)
+        .await
+        .json();
+    let skill_id = skills["levels"]["k"][0]["skills"][0]["id"]
+        .as_i64()
+        .unwrap();
 
     // Non-admin instructor saves a card: skipper = Bob (member 3).
     let payload = json!({
