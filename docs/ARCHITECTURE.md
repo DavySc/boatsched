@@ -71,7 +71,7 @@ Key types worth knowing by name before you touch anything:
 
 - `core::Config` (`rust/crates/core/src/lib.rs:50`) — the full solver config,
   including `f64` timing fields (`stage_seconds`, `seconds`). It stays flat and
-  byte-identical to its old Python `asdict()` shape because it's serialized
+  byte-identical to its stored shape because it's serialized
   verbatim into the `schedule.config` TEXT column (byte-compatibility
   constraint — see §2c).
 - `core::ProblemConfig` (`lib.rs:108`) — the **float-free projection** of
@@ -100,7 +100,7 @@ Key types worth knowing by name before you touch anything:
   admin" a compile error, not a runtime check you might forget. `CollabRole`
   (`lib.rs:119`) extends the same pattern to the `/collab` WebSocket: only the
   `Editor(AdminCtx)` variant can reach the doc-mutation branch.
-- `server::AppState` / `create_app` (`rust/crates/server/src/lib.rs:97,110`) —
+- `server::AppState` / `create_app` (`rust/crates/server/src/lib.rs`) —
   the shared state (`Config`, an `Option<Arc<Mutex<Connection>>>` for the single
   DB connection, the `Authenticator`, the in-memory solve-job map, Yjs
   `CollabState`) and the function that wires up the ~28-route `Router` plus the
@@ -110,8 +110,8 @@ Key types worth knowing by name before you touch anything:
 
 SQLite, one file, opened with `journal_mode=WAL` + `foreign_keys=ON`
 (`rust/crates/db/src/lib.rs:17`). The schema is frozen: `SCHEMA_SQL`
-(`rust/crates/db/src/schema.rs:11`) is reproduced **verbatim** from the retired
-Python implementation and is explicitly marked "do not modify" — see §2c for
+(`rust/crates/db/src/schema.rs:11`) is reproduced **verbatim** from the original
+schema and is explicitly marked "do not modify" — see §2c for
 what that means in practice. Tables: `member`, `instructor`, `season`,
 `schedule`, `boat`, `boat_assignment`, `enrollment` (level `CHECK IN
 ('k','b','A','B')`, one row per member per season), plus a legacy
@@ -125,8 +125,8 @@ evolution happens through additive, idempotent migration functions chained in
 > **Documentation currency note.** `CLAUDE.md` currently lists a "known gap":
 > that `viewer.html`'s evaluation cards call `GET`/`POST /api/progress` but no
 > such route exists. That's stale — both routes are registered
-> (`rust/crates/server/src/lib.rs:155`, handlers `get_progress`/`post_progress`
-> at lines 1306/1327) and backed by `db::helpers::{list_skill_catalog,
+> (`rust/crates/server/src/lib.rs`, handlers `get_progress`/`post_progress`
+> in `routes/eval.rs`) and backed by `db::helpers::eval::{list_skill_catalog,
 > get_season_progress, save_student_progress}` and the `eval_*` tables above.
 > Treat any doc (including this one, in a year) as a claim to verify against
 > the code, not a fact — `grep` before you trust.
@@ -163,14 +163,15 @@ reaches the FFI call at all.
 ### Request and collaboration flow
 
 Every request passes through one global `auth_middleware`
-(`server/src/lib.rs:305`-ish) that resolves the session cookie, denies
+(`server/src/http.rs`) that resolves the session cookie, denies
 non-public paths without one, and stamps security headers on the way out.
 `/collab/*` is exempted from that middleware (the WS-upgrade handler does its
 own auth) because axum's HTTP middleware doesn't run for the WebSocket scope.
-DB-touching handlers follow one recurring pattern, `with_db(...)`: wrap the
-closure in `tokio::task::spawn_blocking` and lock the single shared
-`Arc<Mutex<Connection>>` — deliberately mirroring the old Python
-`asyncio.to_thread` model over one connection, not a connection pool.
+DB-touching handlers take the `Db` extractor (503 when there is no DB) and call
+`db.run(|conn| ...)`, which runs the closure on `spawn_blocking` over the single
+shared `Arc<Mutex<Connection>>` — one connection, not a connection pool.
+Handlers return `Result<Response, AppError>` (`server/src/error.rs`), so `?`
+maps failures to responses.
 
 `POST /solve` kicks off a UUID-keyed background job (`tokio::spawn` +
 `spawn_blocking` for the actual CP-SAT call); `GET /status?id=` polls it. On
@@ -187,7 +188,7 @@ Yjs state, checks for same-day double-bookings, and writes it into
 
 ### Frontend
 
-`src/boatsched/viewer.html` is a single 1754-line file: hand-rolled CSS, static
+`src/boatsched/viewer.html` is a single file: hand-rolled CSS, static
 HTML, and one `<script type="module">` — no build step, no bundler, no
 framework. It's embedded into the server binary at compile time via
 `include_str!("../../../../src/boatsched/viewer.html")`
@@ -284,16 +285,16 @@ suggestion (`CLAUDE.md`, `spec/README.md` convention #1):
 ### b. Adding or changing an HTTP route
 
 1. Register the route in `create_app`'s `Router::new()` chain
-   (`rust/crates/server/src/lib.rs:131`) and write the handler nearby.
+   (`rust/crates/server/src/lib.rs`) and write the handler in the matching
+   `rust/crates/server/src/routes/*.rs` module.
 2. Decide the auth shape: does it need a session at all (add to
    `PUBLIC_PATHS` if not), and is it admin-only? Admin-only handlers should
-   take `boatsched_auth::require_admin(...)` and thread the resulting
+   call `db.admin(&headers, denied_error)` and thread the resulting
    `AdminCtx` through to any mutation — don't hand-roll an `is_admin` check,
    the whole point of the capability type is that a privileged DB write is
    unreachable without one.
-3. DB-touching handlers go through the `with_db(...)` /
-   `tokio::task::spawn_blocking` pattern already used throughout the file —
-   follow the nearest existing handler rather than inventing a new shape.
+3. DB-touching handlers take the `Db` extractor and use `db.run(...)`; return
+   `Handled` and map errors with `AppError` — follow the nearest existing handler.
 4. Add/extend a test in `rust/crates/server/tests/api.rs` (the `tower::oneshot`
    harness — see `mem_conn()`/`app_no_db()`/`app_db()` helpers at the top of
    that file for how existing tests spin up an app).
@@ -305,16 +306,16 @@ suggestion (`CLAUDE.md`, `spec/README.md` convention #1):
 ### c. DB schema or migration change
 
 `SCHEMA_SQL` (`rust/crates/db/src/schema.rs:11`) is **never edited in place**
-for an existing installation — it's byte-compatible with the retired Python
+for an existing installation — it's byte-compatible with the original
 DB and with every already-deployed instance. New columns/tables are added as a
 new, additive, idempotent migration function (see `add_admin_column`,
 `add_yjs_state_column`, `add_eval_tables`, etc. in the same file for the
 pattern — `ALTER TABLE ... ADD COLUMN`, swallowing the "duplicate column"
 error, or `CREATE TABLE IF NOT EXISTS`), appended to `run_migrations()`. Query
-logic lives in `rust/crates/db/src/helpers.rs`; note the `DbError` split
-(`Sqlite | Runtime(String) | Value(String)`) — `server` maps `Runtime` to
-500/409-ish responses and `Value` to 400s, so pick the right variant rather
-than always reaching for one. Extend `rust/crates/db/tests/helpers_parity.rs`
+logic lives in `rust/crates/db/src/helpers/` (one file per domain); note the `DbError` split
+(`Sqlite | Missing(String) | Invalid(String)`) — `Missing` (a referenced row
+is absent) and `Invalid` (rejected input or a conflict) are mapped to 4xx by the
+server, so pick the right variant rather than always reaching for one. Extend `rust/crates/db/tests/helpers_parity.rs`
 for the new behavior.
 
 ### d. Solver / constraint change

@@ -14,7 +14,7 @@
 
 services:
   boatsched-validate:
-    image: ${BOATSCHED_IMAGE:-codeberg.org/oventosti/boatsched:latest}
+    image: ${BOATSCHED_IMAGE:-boatsched:local}
     # Build context is the repo root (matches docker-compose.yml); see rust/Dockerfile.
     build:
       context: .

@@ -58,7 +58,7 @@ is the path, not replicas.
 
 **Data is reused in place.** The container bind-mounts the existing
 `/var/lib/boatsched` directory; the Rust DB layer creates tables with
-`CREATE TABLE IF NOT EXISTS` and runs the same idempotent migrations as Python,
+`CREATE TABLE IF NOT EXISTS` and runs the same idempotent migrations,
 in WAL mode, with byte-compatible scrypt password hashes. **No data migration,
 no schema change, no forced re-login of stored credentials.**
 
@@ -270,7 +270,7 @@ migrations at startup, so a (re)start applies any schema changes.
 
 ```bash
 # Roll back to a previous image:
-docker tag <previous-image-id> codeberg.org/oventosti/boatsched:latest
+docker tag <previous-image-id> boatsched:local
 sudo systemctl restart boatsched-docker
 ```
 
@@ -281,7 +281,7 @@ point for the data itself.
 
 ## Capacity, solver, single-process assumptions
 
-Unchanged in substance from the Python deployment: one process/container, in-memory
+One process/container, in-memory
 sessions/jobs/collab (a restart drops them), `SOLVER_WORKERS=2` to leave headroom
 on the shared vCPUs. OR-Tools maps executable memory, so do **not** add a
 seccomp/no-exec profile that blocks it.
