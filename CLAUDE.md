@@ -1,4 +1,10 @@
 # CLAUDE.md
+## Principles of development
+- Prefer the smallest correct change; don't refactor unrelated code.
+- No new abstractions, config options, or dependencies unless asked.
+- Validate only at system boundaries; trust internal invariants.
+- Comments explain why, never what.
+- Don't write tests unless asked.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -148,10 +154,7 @@ cd spec && lake build
 > Levels reuse the existing `enrollment.level` enum (`'k'\|'b'\|'A'\|'B'`,
 > enforced by the table CHECK and tied to the solver ordering) — not free text.
 
-> **Known gap:** `viewer.html`'s evaluation cards call `GET`/`POST /api/progress`,
-> but no such route exists in `server.py` — those calls fail silently (wrapped
-> in `try`/`catch`). Skill-result persistence (`skill_result` / `v_level_card`)
-> is modelled in the DB but not yet wired to an API.
+> Skill-result persistence is served by `GET`/`POST /api/progress` and `/api/skills`.
 
 ### DB schema
 
