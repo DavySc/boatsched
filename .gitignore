@@ -19,3 +19,7 @@ spec/.lake/
 # Rust build artifacts
 rust/target/
 rust/vendor/
+
+# Web frontend
+web/node_modules/
+web/dist/

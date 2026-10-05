@@ -42,8 +42,8 @@ use boatsched_roster::{parse_roster_bytes, RosterError};
 use boatsched_solver::{solve_with, Constraints};
 use rusqlite::{Connection, OptionalExtension};
 
-/// The embedded SPA served at `/`.
-const VIEWER_HTML: &str = include_str!("../../../../src/boatsched/viewer.html");
+/// The embedded SPA (`web/dist/index.html`, see `build.rs`) served at `/`.
+const VIEWER_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.html"));
 
 /// Valid student levels.
 const VALID_LEVELS: [&str; 4] = ["k", "b", "A", "B"];

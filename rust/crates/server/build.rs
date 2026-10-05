@@ -1,5 +1,11 @@
-//! Emit the OR-Tools rpath for this crate's binaries/tests.
+//! Two jobs: embed the built SPA, and emit the OR-Tools rpath for this crate's
+//! binaries/tests.
 //!
+//! **SPA.** `web/dist/index.html` is a single self-contained file. Without a
+//! frontend build (plain `cargo test`) a placeholder page is embedded instead, so
+//! the crate still compiles; the Docker build always runs the web build first.
+//!
+//! **rpath.**
 //! `boatsched-server` links the OR-Tools C++ library transitively through
 //! `boatsched-solver`. A build script's `cargo:rustc-link-arg` only applies to
 //! the crate it belongs to, so the rpath the solver's build script sets does
@@ -10,7 +16,21 @@
 //! or auto-discovery under `rust/vendor/`) and set the rpath so the loader finds
 //! `libortools.so` and its bundled deps at runtime.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const PLACEHOLDER: &str = "<!doctype html><meta charset=\"utf-8\"><title>PZK</title>\
+<p>Frontend not built. Run <code>npm ci &amp;&amp; npm run build</code> in <code>web/</code> and rebuild the server.</p>";
+
+fn embed_spa() {
+    let dist = Path::new("../../../web/dist/index.html");
+    println!("cargo:rerun-if-changed={}", dist.display());
+    let out = Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("index.html");
+    match std::fs::read(dist) {
+        Ok(bytes) => std::fs::write(out, bytes),
+        Err(_) => std::fs::write(out, PLACEHOLDER),
+    }
+    .expect("write embedded index.html");
+}
 
 fn find_sdk_lib() -> Option<PathBuf> {
     if let Ok(root) = std::env::var("ORTOOLS_ROOT") {
@@ -36,6 +56,7 @@ fn find_sdk_lib() -> Option<PathBuf> {
 }
 
 fn main() {
+    embed_spa();
     println!("cargo:rerun-if-env-changed=ORTOOLS_ROOT");
     if let Some(lib) = find_sdk_lib() {
         println!("cargo:rustc-link-search=native={}", lib.display());

@@ -49,7 +49,7 @@ against the real Rust in CI. Production is one Docker container behind nginx.
          via C++ FFI)           ▼
                 │         crates/server (binary: boatsched-server)
                 └────────▶ Axum HTTP + WebSocket app
-                           serves src/boatsched/viewer.html
+                           serves the SPA built from web/
 ```
 
 ### Crate responsibilities and the dependency graph
@@ -123,7 +123,7 @@ evolution happens through additive, idempotent migration functions chained in
 `run_migrations()` — never by editing `SCHEMA_SQL` in place.
 
 > **Documentation currency note.** `CLAUDE.md` currently lists a "known gap":
-> that `viewer.html`'s evaluation cards call `GET`/`POST /api/progress` but no
+> that the SPA's evaluation cards call `GET`/`POST /api/progress` but no
 > such route exists. That's stale — both routes are registered
 > (`rust/crates/server/src/lib.rs`, handlers `get_progress`/`post_progress`
 > in `routes/eval.rs`) and backed by `db::helpers::eval::{list_skill_catalog,
@@ -188,21 +188,27 @@ Yjs state, checks for same-day double-bookings, and writes it into
 
 ### Frontend
 
-`src/boatsched/viewer.html` is a single file: hand-rolled CSS, static
-HTML, and one `<script type="module">` — no build step, no bundler, no
-framework. It's embedded into the server binary at compile time via
-`include_str!("../../../../src/boatsched/viewer.html")`
-(`server/src/lib.rs:42`), which is *why* the Docker build context has to be the
-repo root rather than `rust/` (see §2e). State lives in plain module-level
-mutable variables (current config, rows, selected season/schedule, admin flag,
-collab/eval-card state) — there's no reactive store; rendering is manual DOM
-patching (template strings + a targeted `.replaceWith(...)` on the affected
-day's `<section>`). Roughly 25 `fetch()` call sites talk to the REST API
-described below. Yjs itself is loaded from `esm.sh` at runtime, not vendored —
-that's why `deploy/nginx.conf`'s CSP explicitly allowlists that origin. When
-collaborative editing is active, boat-assignment mutation has **two parallel
-paths** — `ydoc.transact(...)` for the live-collab case, plain `POST /swap`
-otherwise — which matters if you're changing assignment-mutation logic (§2e).
+`web/` is a React + Vite + TypeScript app. `npm run build` type-checks and bundles
+it into a single self-contained `web/dist/index.html` (via `vite-plugin-singlefile`;
+Yjs and y-websocket are npm dependencies, no CDN), which
+`rust/crates/server/build.rs` copies into the binary (`include_str!` of the copy in
+`OUT_DIR`; a placeholder page is embedded when `web/dist` doesn't exist, so
+`cargo test` needs no Node). That is *why* the Docker build context is the repo
+root and why the Dockerfile has a Node stage.
+
+Layout: `session.tsx` (login state, config, boat names), `Shell.tsx` (season and
+schedule pickers, solve/re-solve jobs, modals), `schedule/` (the planning screen),
+`eval/` (evaluation card), `admin/` (members, instructors), `api.ts` (one fetch
+wrapper: `r.ok` handling, global 401 → login), `i18n.ts` (Dutch day/level names).
+
+The live schedule is a Yjs doc (`schedule/useYSchedule.ts`) synced through
+`/collab/{id}`: map `schedule` (`"{day}:{boat}"` → names, what `/commit` writes),
+plus maps `locks` and `absences` (`name|day` → true, inputs for
+`POST /schedule/{id}/resolve`). All edits go through that doc (moves, swaps,
+locks, absences, undo/redo via `Y.UndoManager`); only admins' updates are kept by
+the server. `schedule/conflicts.ts` recomputes violations (double or missing
+placement, absent but placed, level spread on restricted days, boat sizes)
+from the doc on every change — the same rules the solver enforces.
 
 ### Verification layer (`spec/`)
 
@@ -336,20 +342,18 @@ do what you think). The parity bar throughout that test file is *structural
 invariants + objective values*, not bit-identical assignments — CP-SAT with
 `workers > 1` is nondeterministic about which optimum among ties it returns.
 
-### e. Frontend change (`viewer.html`)
+### e. Frontend change (`web/`)
 
-No build step — edit the file directly, reload. New backend-facing state
-should join the existing module-level variables (don't introduce a second
-state-management approach); new server calls follow the existing
-`fetch()` + dedicated render-function pattern. If you're touching anything
-that mutates boat assignments, remember the **dual mutation path**: when
-`collabMode` is active, mutations go through `ydoc.transact(...)`; otherwise
-they go through plain `POST /swap`. A change that only updates one path will
-silently misbehave under the other. UI text is Dutch — match the existing
-tone/vocabulary rather than switching to English for a new string. Because the
-file is embedded via `include_str!` at *compile time*, a frontend-only change
-still requires a `cargo build`/`cargo run` (or Docker rebuild) to see it served
-— there's no separate dev server or hot-reload for it.
+`cd web && npm ci && npm run dev` serves the app with hot reload and proxies the
+API and the collab socket to a server on :8000 (`vite.config.ts`). `npm run build`
+is the gate (type-check + bundle); CI and the Docker build run it. Server calls go
+through `api()` in `web/src/api.ts` — don't call `fetch` directly (it handles
+errors and session expiry). Anything that changes boat assignments goes through
+the Yjs hook (`useYSchedule`), never `POST /swap` — the doc is what `/commit`
+persists. UI text is Dutch — match the existing tone/vocabulary and put strings
+shared between components in `i18n.ts`. To see a frontend change served by the
+real binary, `npm run build` and then rebuild the server (the bundle is embedded
+at compile time).
 
 ### f. Auth / authorization change
 
@@ -425,7 +429,7 @@ cd spec && lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.
 # Re-extract the Tier-2 Aeneas model after changing validate/authz logic
 # (exact pinned command: see spec/README.md "Regenerating the extracted model")
 
-# Production image (build context is the REPO ROOT — server embeds viewer.html)
+# Production image (build context is the REPO ROOT — builds web/ and embeds it)
 docker build -t boatsched -f rust/Dockerfile .
 ```
 
