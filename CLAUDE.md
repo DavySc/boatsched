@@ -105,6 +105,7 @@ cd spec && lake build
 | GET | `/schedule?id=` | Get schedule rows + start date | auth |
 | POST | `/solve?season_id=` | Start background solve job | admin (with DB) |
 | GET | `/status?id=` | Poll solve job | auth |
+| POST | `/schedule/{id}/resolve` | Re-solve a schedule keeping `locks` (`[{name,day,boat}]`) and leaving `absences` (`[{name,day}]`) out of every boat that day; returns a job id like `/solve`. Stored in the new schedule's `config` JSON and returned as `constraints` by `GET /schedule` | admin |
 | POST | `/swap` | Swap two kids between boats | admin |
 | WS | `/collab/{schedule_id}` | Yjs collaborative editing (non-admins observe only) | auth |
 | POST | `/schedule/{id}/commit` | Validate and write Yjs state to DB | admin |
@@ -206,6 +207,8 @@ legacy DB.
 | B | Maximise distinct levels per boat | `diverse` (Fri/Mon by default) |
 | C | Minimise repeat co-boatings (Social-Golfer) | all days |
 
+With absences or locks, per-level boat prefixing is disabled and each boat holds floor/ceil(present/boats) kids that day. The roster size must still divide evenly by `boats` (`validate`).
+
 `adj` (default 1) is a hard constraint: on restricted days boats may only span levels whose indices differ by at most `adj`.
 
 ### Yjs collaborative editing
@@ -247,7 +250,7 @@ responses, security headers in middleware, and a `min_password_len` of 8. The
 ### Solver output
 
 The solver returns the assignment rows `(day, boat, name, level)` plus stats
-`{mixed, distinct, repeats, status_C}` (matching the lexicographic stages
+`{mixed, distinct, repeats, status_A, status_B, status_C}` (matching the lexicographic stages
 below). A progress callback streams per-stage results for the live UI.
 
 ### Error categories

@@ -51,6 +51,9 @@ int32_t bs_cpsat_solve(
     int32_t workers,
     int32_t prefixing,
     int32_t prune_pairs,
+    const int32_t* present,           // [n_kids*n_days] 0 = absent, or null (all present)
+    const int32_t* fixed,             // [n_kids*n_days] locked boat index, -1 = free, or null
+    const int32_t* hint,              // [n_kids*n_days] previous boat index for warm start, -1 = none, or null
     int32_t* out_assign,              // [n_kids*n_days] boat index (0-based)
     int32_t* out_status,              // [3] CpSolverStatus per stage (-1 = skip)
     int64_t* out_vals,                // [3] objective value per stage
@@ -73,22 +76,46 @@ int32_t bs_cpsat_solve(
         for (int b = 0; b < B; ++b)
           x[xi(k, d, b, D, B)] = m.NewBoolVar();
 
-    // Each kid in exactly one boat per day.
+    auto is_present = [&](int k, int d) { return present == nullptr || present[k * D + d] != 0; };
+
+    // A present kid is in exactly one boat per day; an absent kid in none.
     for (int k = 0; k < N; ++k)
       for (int d = 0; d < D; ++d) {
         std::vector<BoolVar> row;
         row.reserve(B);
         for (int b = 0; b < B; ++b) row.push_back(x[xi(k, d, b, D, B)]);
-        m.AddEquality(LinearExpr::Sum(row), 1);
+        m.AddEquality(LinearExpr::Sum(row), is_present(k, d) ? 1 : 0);
       }
-    // Each boat holds exactly cap per day.
-    for (int d = 0; d < D; ++d)
+    // Boats are balanced per day: with P present kids each boat holds floor(P/B)
+    // or ceil(P/B). With nobody absent (N % B == 0) that is exactly cap.
+    for (int d = 0; d < D; ++d) {
+      int present_d = 0;
+      for (int k = 0; k < N; ++k) present_d += is_present(k, d) ? 1 : 0;
+      const int lo = present_d / B, hi = lo + (present_d % B ? 1 : 0);
       for (int b = 0; b < B; ++b) {
         std::vector<BoolVar> col;
         col.reserve(N);
         for (int k = 0; k < N; ++k) col.push_back(x[xi(k, d, b, D, B)]);
-        m.AddEquality(LinearExpr::Sum(col), cap);
+        m.AddLinearConstraint(LinearExpr::Sum(col), Domain(lo, hi));
       }
+    }
+
+    // Locked assignments.
+    if (fixed != nullptr)
+      for (int k = 0; k < N; ++k)
+        for (int d = 0; d < D; ++d) {
+          int b = fixed[k * D + d];
+          if (b >= 0 && b < B) m.AddEquality(x[xi(k, d, b, D, B)], 1);
+        }
+
+    // Warm start from a previous assignment (replaced by stage B's before stage C).
+    if (hint != nullptr)
+      for (int k = 0; k < N; ++k)
+        for (int d = 0; d < D; ++d) {
+          int hb = hint[k * D + d];
+          if (hb < 0) continue;
+          for (int b = 0; b < B; ++b) m.AddHint(x[xi(k, d, b, D, B)], b == hb ? 1 : 0);
+        }
 
     // Prefixing: contiguous boat ranges per level on restricted days.
     if (prefixing) {
@@ -224,6 +251,7 @@ int32_t bs_cpsat_solve(
     out_vals[1] = vb;
     m.AddGreaterOrEqual(total_distinct, vb);
 
+    m.ClearHints();
     // Warm-start stage C from stage B's assignment of diverse-day vars (or all
     // vars if there are no diverse days).
     for (int k = 0; k < N; ++k)

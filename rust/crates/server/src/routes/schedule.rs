@@ -23,15 +23,27 @@ pub(crate) async fn get_schedule(db: Db, Query(q): Query<HashMap<String, String>
         .get("id")
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| AppError::bad_request("missing id"))?;
-    let (rows, start_date) = db
+    let (rows, start_date, config) = db
         .run(move |conn| {
             let rows = db::get_schedule(conn, id)?;
             let start = db::get_schedule_start_date(conn, id)?;
-            Ok::<_, db::DbError>((rows, start))
+            let config = db::get_schedule_config(conn, id)?;
+            Ok::<_, db::DbError>((rows, start, config))
         })
         .await
         .map_err(|e| AppError::internal("get_schedule", e))?;
-    Ok(Json(json!({ "rows": rows, "start_date": start_date })).into_response())
+    // Absences and locks the schedule was solved with (empty for a plain solve).
+    let stored: Value = config
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or(Value::Null);
+    let constraints = json!({
+        "absences": stored.get("absences").cloned().unwrap_or(json!([])),
+        "locks": stored.get("locks").cloned().unwrap_or(json!([])),
+    });
+    Ok(
+        Json(json!({ "rows": rows, "start_date": start_date, "constraints": constraints }))
+            .into_response(),
+    )
 }
 
 pub(crate) async fn set_start_date(db: Db, Path(schedule_id): Path<i64>, body: Bytes) -> Handled {

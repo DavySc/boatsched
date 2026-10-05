@@ -36,10 +36,10 @@ use axum::{Json, Router};
 use serde_json::Value;
 
 use boatsched_auth::{guard_set_admin, AdminCtx, AuthConfig, AuthError, Authenticator};
-use boatsched_core::Config;
+use boatsched_core::{Config, ScheduleRow};
 use boatsched_db as db;
 use boatsched_roster::{parse_roster_bytes, RosterError};
-use boatsched_solver::solve;
+use boatsched_solver::{solve_with, Constraints};
 use rusqlite::{Connection, OptionalExtension};
 
 /// The embedded SPA served at `/`.
@@ -145,6 +145,7 @@ pub fn create_app(cfg: Config, db_conn: Option<Connection>, opts: ServerOptions)
         .route("/schedules", get(get_schedules))
         .route("/schedule", get(get_schedule))
         .route("/solve", post(solve_endpoint))
+        .route("/schedule/:id/resolve", post(resolve_endpoint))
         .route("/status", get(get_status))
         .route("/schedule/:id/start-date", post(set_start_date))
         .route("/schedule/:id/commit", post(commit_schedule))
