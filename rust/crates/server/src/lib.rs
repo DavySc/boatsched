@@ -16,10 +16,13 @@
 //!   mirroring the Python single-connection + `asyncio.to_thread` model.
 
 pub mod collab;
+mod error;
 mod http;
 mod routes;
 mod upload;
 
+use error::Handled;
+use http::Db;
 use http::*;
 use routes::{
     auth::*, eval::*, instructors::*, levels::*, members::*, misc::*, schedule::*, seasons::*,

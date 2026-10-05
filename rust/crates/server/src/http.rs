@@ -1,31 +1,15 @@
+use crate::error::AppError;
 use crate::*;
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use serde_json::json;
-
-// ---------------------------------------------------------------------------
-// Response + request helpers
-// ---------------------------------------------------------------------------
-
-pub(crate) fn e_error(status: StatusCode, msg: impl Into<String>) -> Response {
-    (status, Json(json!({ "error": msg.into() }))).into_response()
-}
-
-pub(crate) fn e_detail(status: StatusCode, msg: impl Into<String>) -> Response {
-    (status, Json(json!({ "detail": msg.into() }))).into_response()
-}
-
-/// Generic 500, mirroring `_server_error`: log the real cause, return an opaque
-/// body so DB messages / paths don't leak.
-pub(crate) fn server_error(context: &str, e: impl std::fmt::Debug) -> Response {
-    eprintln!("[error] {context}: {e:?}");
-    e_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-}
 
 pub(crate) fn ok_true() -> Response {
     Json(json!({ "ok": true })).into_response()
 }
 
-/// Run `f` with the (optional) DB connection on a blocking thread, mirroring
-/// `asyncio.to_thread` over the shared single connection.
+/// Run `f` with the (optional) DB connection on a blocking thread over the shared
+/// single connection.
 pub(crate) async fn with_db<T, F>(state: &SharedState, f: F) -> T
 where
     F: FnOnce(Option<&Connection>) -> T + Send + 'static,
@@ -33,11 +17,65 @@ where
 {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let guard = db.as_ref().map(|m| m.lock().unwrap());
+        let guard = db
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(|p| p.into_inner()));
         f(guard.as_deref())
     })
     .await
     .expect("db task panicked")
+}
+
+/// Proof that the server has a database: extracting it answers 503 otherwise, so
+/// handlers that need the DB don't repeat the check or unwrap the connection.
+pub(crate) struct Db(SharedState);
+
+#[axum::async_trait]
+impl FromRequestParts<SharedState> for Db {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        _parts: &mut Parts,
+        state: &SharedState,
+    ) -> Result<Self, Self::Rejection> {
+        if state.db.is_some() {
+            Ok(Db(state.clone()))
+        } else {
+            Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no database",
+            ))
+        }
+    }
+}
+
+impl Db {
+    pub(crate) fn state(&self) -> &SharedState {
+        &self.0
+    }
+
+    pub(crate) async fn run<T, F>(&self, f: F) -> T
+    where
+        F: FnOnce(&Connection) -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        with_db(&self.0, move |conn| {
+            f(conn.expect("Db extractor guarantees a connection"))
+        })
+        .await
+    }
+
+    /// The [`AdminCtx`] capability for the request, or `denied` if the caller
+    /// isn't an admin. Admin-only handlers gate the mutation on `Ok`.
+    pub(crate) async fn admin(
+        &self,
+        headers: &HeaderMap,
+        denied: AppError,
+    ) -> Result<AdminCtx, AppError> {
+        require_admin(&self.0, bsession(headers))
+            .await
+            .map_err(|_| denied)
+    }
 }
 
 pub(crate) async fn auth_member(state: &SharedState, token: Option<String>) -> Option<i64> {
@@ -97,20 +135,28 @@ pub(crate) fn set_session_cookie(resp: &mut Response, token: &str, opts: &Server
 
 /// Cheap content-length guard, mirroring `_too_large`: declared size over the
 /// cap → 413; unparseable → 400.
-pub(crate) fn too_large(headers: &HeaderMap, max: usize) -> Option<Response> {
-    let cl = headers.get(header::CONTENT_LENGTH)?.to_str().ok()?;
+pub(crate) fn too_large(headers: &HeaderMap, max: usize) -> Result<(), AppError> {
+    let Some(cl) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Ok(());
+    };
     match cl.parse::<usize>() {
-        Ok(n) if n > max => Some(e_error(StatusCode::PAYLOAD_TOO_LARGE, "payload too large")),
-        Ok(_) => None,
-        Err(_) => Some(e_error(StatusCode::BAD_REQUEST, "invalid content-length")),
+        Ok(n) if n > max => Err(AppError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload too large",
+        )),
+        Ok(_) => Ok(()),
+        Err(_) => Err(AppError::bad_request("invalid content-length")),
     }
 }
 
 /// Parse a JSON body into a `Value`, or a 400 response. Mirrors the Python
 /// `body = await request.json()` + `except Exception: 400` pattern (the exact
 /// message text for malformed JSON differs from Python — documented divergence).
-pub(crate) fn parse_json(body: &Bytes) -> Result<Value, Response> {
-    serde_json::from_slice(body).map_err(|e| e_error(StatusCode::BAD_REQUEST, e.to_string()))
+pub(crate) fn parse_json(body: &Bytes) -> Result<Value, AppError> {
+    serde_json::from_slice(body).map_err(|e| AppError::bad_request(e.to_string()))
 }
 
 pub(crate) fn ctype_str(headers: &HeaderMap) -> String {
@@ -145,7 +191,7 @@ pub(crate) async fn auth_middleware(
     if !PUBLIC_PATHS.contains(&path.as_str()) && !path.starts_with("/collab/") {
         let token = bsession(req.headers());
         if auth_member(&state, token).await.is_none() {
-            return e_error(StatusCode::UNAUTHORIZED, "not authenticated");
+            return AppError::new(StatusCode::UNAUTHORIZED, "not authenticated").into_response();
         }
     }
     let mut resp = next.run(req).await;

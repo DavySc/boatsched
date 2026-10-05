@@ -1,26 +1,20 @@
+use crate::error::AppError;
 use crate::*;
 use serde_json::json;
-
-// ---------------------------------------------------------------------------
-// Auth: login / logout / me
-// ---------------------------------------------------------------------------
 
 pub(crate) async fn api_login(
     State(state): State<SharedState>,
     headers: HeaderMap,
     body: Bytes,
-) -> Response {
+) -> Handled {
     let ip = client_ip(&headers);
     if state.auth.login_blocked(&ip) {
-        return e_error(
+        return Err(AppError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "te veel pogingen, probeer later opnieuw",
-        );
+        ));
     }
-    let v = match parse_json(&body) {
-        Ok(v) => v,
-        Err(_) => return e_error(StatusCode::BAD_REQUEST, "invalid request"),
-    };
+    let v = parse_json(&body).map_err(|_| AppError::bad_request("invalid request"))?;
     let name = v
         .get("name")
         .and_then(|x| x.as_str())
@@ -44,7 +38,7 @@ pub(crate) async fn api_login(
         };
         let mut resp = Json(json!({ "ok": true, "name": label })).into_response();
         set_session_cookie(&mut resp, &token, &state.opts);
-        return resp;
+        return Ok(resp);
     }
 
     let (name_c, pw_c) = (name.clone(), password.clone());
@@ -55,14 +49,17 @@ pub(crate) async fn api_login(
     match member_id {
         None => {
             state.auth.record_login_failure(&ip);
-            e_error(StatusCode::UNAUTHORIZED, "Onjuiste naam of wachtwoord.")
+            Err(AppError::new(
+                StatusCode::UNAUTHORIZED,
+                "Onjuiste naam of wachtwoord.",
+            ))
         }
         Some(mid) => {
             state.auth.clear_login_failures(&ip);
             let token = state.auth.new_session(mid);
             let mut resp = Json(json!({ "ok": true, "name": name })).into_response();
             set_session_cookie(&mut resp, &token, &state.opts);
-            resp
+            Ok(resp)
         }
     }
 }
@@ -78,16 +75,14 @@ pub(crate) async fn api_logout(headers: HeaderMap, State(state): State<SharedSta
     resp
 }
 
-pub(crate) async fn api_me(State(state): State<SharedState>, headers: HeaderMap) -> Response {
-    let token = bsession(&headers);
-    let member_id = auth_member(&state, token).await;
-    let member_id = match member_id {
-        Some(m) => m,
-        None => return e_error(StatusCode::UNAUTHORIZED, "not authenticated"),
-    };
+pub(crate) async fn api_me(State(state): State<SharedState>, headers: HeaderMap) -> Handled {
+    let member_id = auth_member(&state, bsession(&headers))
+        .await
+        .ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "not authenticated"))?;
     if member_id == boatsched_auth::OPEN_MODE_MEMBER || state.db.is_none() {
-        return Json(json!({ "member_id": 0, "name": "instructor", "is_admin": true }))
-            .into_response();
+        return Ok(
+            Json(json!({ "member_id": 0, "name": "instructor", "is_admin": true })).into_response(),
+        );
     }
     let auth = state.auth.clone();
     let (name, is_admin) = with_db(&state, move |conn| {
@@ -105,7 +100,7 @@ pub(crate) async fn api_me(State(state): State<SharedState>, headers: HeaderMap)
         (row.map(|(n, _)| n), is_admin)
     })
     .await;
-    Json(json!({ "member_id": member_id, "name": name, "is_admin": is_admin })).into_response()
+    Ok(Json(json!({ "member_id": member_id, "name": name, "is_admin": is_admin })).into_response())
 }
 
 pub(crate) fn client_ip(headers: &HeaderMap) -> String {

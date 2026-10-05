@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use crate::*;
 use serde_json::json;
 
@@ -10,25 +11,23 @@ pub(crate) async fn solve_endpoint(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
     body: Bytes,
-) -> Response {
+) -> Handled {
     if state.db.is_some() && !current_is_admin(&state, bsession(&headers)).await {
-        return e_error(StatusCode::FORBIDDEN, "admin required");
+        return Err(AppError::forbidden("admin required"));
     }
-    if let Some(r) = too_large(&headers, state.opts.max_upload_bytes) {
-        return r;
-    }
+    too_large(&headers, state.opts.max_upload_bytes)?;
     let ctype = ctype_str(&headers);
     let mut raw = body.to_vec();
     if raw.len() > state.opts.max_upload_bytes {
-        return e_error(StatusCode::PAYLOAD_TOO_LARGE, "payload too large");
+        return Err(AppError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload too large",
+        ));
     }
     if ctype.starts_with("multipart/form-data") {
         raw = extract_multipart(&raw, &ctype);
     }
-    let kids = match parse_roster_bytes(&raw) {
-        Ok(k) => k,
-        Err(RosterError(msg)) => return e_error(StatusCode::BAD_REQUEST, msg),
-    };
+    let kids = parse_roster_bytes(&raw).map_err(|RosterError(msg)| AppError::bad_request(msg))?;
     let season_id = q.get("season_id").cloned();
 
     if state.db.is_some() {
@@ -40,8 +39,8 @@ pub(crate) async fn solve_endpoint(
         .await;
         match res {
             Ok(()) => {}
-            Err(db::DbError::Runtime(msg)) => return e_error(StatusCode::BAD_REQUEST, msg),
-            Err(e) => return server_error("solve/add_members", e),
+            Err(db::DbError::Runtime(msg)) => return Err(AppError::bad_request(msg)),
+            Err(e) => return Err(AppError::internal("solve/add_members", e)),
         }
     }
 
@@ -67,7 +66,7 @@ pub(crate) async fn solve_endpoint(
     tokio::spawn(async move {
         run_job(state2, jid2, kids, cfg, season_id).await;
     });
-    Json(json!({ "id": jid })).into_response()
+    Ok(Json(json!({ "id": jid })).into_response())
 }
 
 pub(crate) async fn run_job(
@@ -143,12 +142,12 @@ pub(crate) fn prune_jobs(jobs: &mut HashMap<String, Job>) {
 pub(crate) async fn get_status(
     State(state): State<SharedState>,
     Query(q): Query<HashMap<String, String>>,
-) -> Response {
+) -> Handled {
     let id = q.get("id").cloned().unwrap_or_default();
     let jobs = state.jobs.lock().unwrap();
     let job = match jobs.get(&id) {
         Some(j) => j,
-        None => return e_error(StatusCode::NOT_FOUND, "no such job"),
+        None => return Err(AppError::not_found("no such job")),
     };
     let mut out = serde_json::Map::new();
     match job.status {
@@ -168,7 +167,7 @@ pub(crate) async fn get_status(
             out.insert("error".into(), json!(job.error));
         }
     }
-    Json(Value::Object(out)).into_response()
+    Ok(Json(Value::Object(out)).into_response())
 }
 
 pub(crate) fn stats_json(stats: Option<&boatsched_solver::Stats>) -> Value {

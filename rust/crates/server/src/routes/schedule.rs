@@ -1,155 +1,98 @@
+use crate::error::AppError;
 use crate::*;
 use serde_json::json;
 
-// ---------------------------------------------------------------------------
-// Schedules
-// ---------------------------------------------------------------------------
+const EDIT_DENIED: &str = "Only admins may edit boat assignments";
 
 pub(crate) async fn get_schedules(
     State(state): State<SharedState>,
     Query(q): Query<HashMap<String, String>>,
-) -> Response {
+) -> Handled {
     let season_id = q.get("season_id").and_then(|s| s.parse::<i64>().ok());
     let (Some(_), Some(sid)) = (state.db.as_ref(), season_id) else {
-        return Json(json!([])).into_response();
+        return Ok(Json(json!([])).into_response());
     };
-    match with_db(&state, move |conn| db::list_schedules(conn.unwrap(), sid)).await {
-        Ok(rows) => Json(rows).into_response(),
-        Err(e) => server_error("schedules", e),
-    }
+    let rows = with_db(&state, move |conn| db::list_schedules(conn.unwrap(), sid))
+        .await
+        .map_err(|e| AppError::internal("schedules", e))?;
+    Ok(Json(rows).into_response())
 }
 
-pub(crate) async fn get_schedule(
-    State(state): State<SharedState>,
-    Query(q): Query<HashMap<String, String>>,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
-    let id = match q.get("id").and_then(|s| s.parse::<i64>().ok()) {
-        Some(id) => id,
-        None => return e_error(StatusCode::BAD_REQUEST, "missing id"),
-    };
-    let result = with_db(&state, move |conn| {
-        let conn = conn.unwrap();
-        let rows = db::get_schedule(conn, id)?;
-        let start = db::get_schedule_start_date(conn, id)?;
-        Ok::<_, db::DbError>((rows, start))
-    })
-    .await;
-    match result {
-        Ok((rows, start_date)) => {
-            Json(json!({ "rows": rows, "start_date": start_date })).into_response()
-        }
-        Err(e) => server_error("get_schedule", e),
-    }
+pub(crate) async fn get_schedule(db: Db, Query(q): Query<HashMap<String, String>>) -> Handled {
+    let id = q
+        .get("id")
+        .and_then(|s| s.parse::<i64>().ok())
+        .ok_or_else(|| AppError::bad_request("missing id"))?;
+    let (rows, start_date) = db
+        .run(move |conn| {
+            let rows = db::get_schedule(conn, id)?;
+            let start = db::get_schedule_start_date(conn, id)?;
+            Ok::<_, db::DbError>((rows, start))
+        })
+        .await
+        .map_err(|e| AppError::internal("get_schedule", e))?;
+    Ok(Json(json!({ "rows": rows, "start_date": start_date })).into_response())
 }
 
-// ---------------------------------------------------------------------------
-// Start-date / swap
-// ---------------------------------------------------------------------------
-
-pub(crate) async fn set_start_date(
-    State(state): State<SharedState>,
-    Path(schedule_id): Path<i64>,
-    body: Bytes,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
-    let v = match parse_json(&body) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
+pub(crate) async fn set_start_date(db: Db, Path(schedule_id): Path<i64>, body: Bytes) -> Handled {
+    let v = parse_json(&body)?;
     let date_str = v
         .get("start_date")
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    match with_db(&state, move |conn| {
-        db::set_schedule_start_date(conn.unwrap(), schedule_id, date_str.as_deref())
-    })
-    .await
-    {
-        Ok(()) => ok_true(),
-        Err(e) => server_error("set_start_date", e),
-    }
+    db.run(move |conn| db::set_schedule_start_date(conn, schedule_id, date_str.as_deref()))
+        .await
+        .map_err(|e| AppError::internal("set_start_date", e))?;
+    Ok(ok_true())
 }
 
-pub(crate) async fn swap_endpoint(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
+pub(crate) async fn swap_endpoint(db: Db, headers: HeaderMap, body: Bytes) -> Handled {
     // Boat assignments are admin-only at all times — gate on the AdminCtx
     // capability before doing the mutation.
-    let _admin = match require_admin(&state, bsession(&headers)).await {
-        Ok(c) => c,
-        Err(_) => {
-            return e_detail(
-                StatusCode::FORBIDDEN,
-                "Only admins may edit boat assignments",
-            )
-        }
-    };
-    let v = match parse_json(&body) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
+    let _admin = db
+        .admin(
+            &headers,
+            AppError::detail(StatusCode::FORBIDDEN, EDIT_DENIED),
+        )
+        .await?;
+    let v = parse_json(&body)?;
     let (Some(schedule_id), Some(day), Some(name_a), Some(name_b)) = (
         v.get("schedule_id").and_then(json_int),
         v.get("day").and_then(|x| x.as_str()).map(str::to_string),
         v.get("name_a").and_then(|x| x.as_str()).map(str::to_string),
         v.get("name_b").and_then(|x| x.as_str()).map(str::to_string),
     ) else {
-        return e_error(StatusCode::BAD_REQUEST, "'schedule_id'");
+        return Err(AppError::bad_request("'schedule_id'"));
     };
-    match with_db(&state, move |conn| {
-        db::swap_assignment(conn.unwrap(), schedule_id, &day, &name_a, &name_b)
-    })
-    .await
-    {
-        Ok(()) => ok_true(),
-        Err(e) => server_error("swap", e),
-    }
+    db.run(move |conn| db::swap_assignment(conn, schedule_id, &day, &name_a, &name_b))
+        .await
+        .map_err(|e| AppError::internal("swap", e))?;
+    Ok(ok_true())
 }
 
-// ---------------------------------------------------------------------------
-// Yjs commit + collab websocket
-// ---------------------------------------------------------------------------
-
 pub(crate) async fn commit_schedule(
-    State(state): State<SharedState>,
+    db: Db,
     Path(schedule_id): Path<i64>,
     headers: HeaderMap,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
+) -> Handled {
     // Admin-only at all times (admins are not blocked by the start-date lock).
-    let _admin = match require_admin(&state, bsession(&headers)).await {
-        Ok(c) => c,
-        Err(_) => {
-            return e_detail(
-                StatusCode::FORBIDDEN,
-                "Only admins may edit boat assignments",
-            )
-        }
-    };
+    let _admin = db
+        .admin(
+            &headers,
+            AppError::detail(StatusCode::FORBIDDEN, EDIT_DENIED),
+        )
+        .await?;
 
     // Prefer the live in-memory doc (a session may be mid-edit); otherwise load
     // the persisted yjs_state. The doc is fully consumed before the next await.
     let outcome = {
-        let doc = match state.collab.peek_doc(schedule_id) {
+        let doc = match db.state().collab.peek_doc(schedule_id) {
             Some(d) => d,
             None => {
-                let st = with_db(&state, move |conn| {
-                    db::get_yjs_state(conn.unwrap(), schedule_id).unwrap_or(None)
-                })
-                .await;
+                let st = db
+                    .run(move |conn| db::get_yjs_state(conn, schedule_id).unwrap_or(None))
+                    .await;
                 let doc = yrs::Doc::new();
                 {
                     use yrs::Transact;
@@ -171,17 +114,13 @@ pub(crate) async fn commit_schedule(
                 .into_iter()
                 .map(|c| json!({ "name": c.name, "day": c.day, "boats": c.boats }))
                 .collect();
-            Json(json!({ "ok": false, "conflicts": arr })).into_response()
+            Ok(Json(json!({ "ok": false, "conflicts": arr })).into_response())
         }
         Ok(assignments) => {
-            match with_db(&state, move |conn| {
-                db::replace_assignments(conn.unwrap(), schedule_id, &assignments)
-            })
-            .await
-            {
-                Ok(()) => ok_true(),
-                Err(e) => server_error("commit", e),
-            }
+            db.run(move |conn| db::replace_assignments(conn, schedule_id, &assignments))
+                .await
+                .map_err(|e| AppError::internal("commit", e))?;
+            Ok(ok_true())
         }
     }
 }

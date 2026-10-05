@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use crate::*;
 
 pub(crate) async fn collab_ws(
@@ -11,11 +12,11 @@ pub(crate) async fn collab_ws(
     // connection is refused either way (documented divergence from the Python
     // post-accept ws.close(1011/1008)).
     if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
+        return AppError::new(StatusCode::SERVICE_UNAVAILABLE, "no database").into_response();
     }
     let token = bsession(&headers);
     if auth_member(&state, token.clone()).await.is_none() {
-        return e_error(StatusCode::UNAUTHORIZED, "not authenticated");
+        return AppError::new(StatusCode::UNAUTHORIZED, "not authenticated").into_response();
     }
     // Admins edit; everyone else observes (their update frames are dropped).
     let is_admin = current_is_admin(&state, token).await;

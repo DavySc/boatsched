@@ -1,219 +1,158 @@
+use crate::error::AppError;
 use crate::*;
 use serde_json::json;
 
-// ---------------------------------------------------------------------------
-// Instructors / password management
-// ---------------------------------------------------------------------------
-
-pub(crate) async fn get_instructors(State(state): State<SharedState>) -> Response {
+pub(crate) async fn get_instructors(State(state): State<SharedState>) -> Handled {
     if state.db.is_none() {
-        return Json(json!([])).into_response();
+        return Ok(Json(json!([])).into_response());
     }
-    match with_db(&state, |conn| db::list_instructors(conn.unwrap())).await {
-        Ok(rows) => Json(rows).into_response(),
-        Err(e) => server_error("instructors", e),
+    let rows = with_db(&state, |conn| db::list_instructors(conn.unwrap()))
+        .await
+        .map_err(|e| AppError::internal("instructors", e))?;
+    Ok(Json(rows).into_response())
+}
+
+/// `name` + `password` from a JSON body, name trimmed.
+fn name_and_password(v: &Value) -> Result<(String, String), AppError> {
+    match (v.get("name"), v.get("password")) {
+        (Some(n), Some(p)) => Ok((json_str(n).trim().to_string(), json_str(p))),
+        _ => Err(AppError::bad_request("'name'")),
     }
 }
 
-pub(crate) async fn create_instructor(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
-    if !current_is_admin(&state, bsession(&headers)).await {
-        return e_error(StatusCode::FORBIDDEN, "admin required");
-    }
-    let v = match parse_json(&body) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let (name, password) = match (v.get("name"), v.get("password")) {
-        (Some(n), Some(p)) => (json_str(n).trim().to_string(), json_str(p)),
-        _ => return e_error(StatusCode::BAD_REQUEST, "'name'"),
-    };
+pub(crate) async fn create_instructor(db: Db, headers: HeaderMap, body: Bytes) -> Handled {
+    db.admin(&headers, AppError::forbidden("admin required"))
+        .await?;
+    let v = parse_json(&body)?;
+    let (name, password) = name_and_password(&v)?;
     if name.is_empty() || password.is_empty() {
-        return e_error(StatusCode::BAD_REQUEST, "name and password are required");
+        return Err(AppError::bad_request("name and password are required"));
     }
-    if let Some(r) = weak_password(&state, &password) {
-        return r;
-    }
+    weak_password(db.state(), &password)?;
 
-    // Replicates the Python `_create` closure: find/create the member, refuse if
-    // already an instructor, auto-admin the first instructor.
-    let name_c = name.clone();
-    let created = with_db(&state, move |conn| {
-        let conn = conn.unwrap();
-        let member_id: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM member WHERE name=? COLLATE NOCASE",
-                [&name_c],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let member_id = match member_id {
-            Some(id) => id,
-            None => {
-                conn.execute("INSERT INTO member (name) VALUES (?)", [&name_c])?;
-                conn.last_insert_rowid()
+    // Find or create the member, refuse if already an instructor, and make the
+    // very first instructor an admin.
+    let created = db
+        .run(move |conn| {
+            let member_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM member WHERE name=? COLLATE NOCASE",
+                    [&name],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let member_id = match member_id {
+                Some(id) => id,
+                None => {
+                    conn.execute("INSERT INTO member (name) VALUES (?)", [&name])?;
+                    conn.last_insert_rowid()
+                }
+            };
+            let already: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM instructor WHERE member_id=?",
+                    [member_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if already.is_some() {
+                return Ok::<Option<i64>, rusqlite::Error>(None);
             }
-        };
-        let already: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM instructor WHERE member_id=?",
-                [member_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if already.is_some() {
-            return Ok::<Option<i64>, rusqlite::Error>(None);
-        }
-        let no_admins: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        conn.execute(
-            "INSERT INTO instructor (member_id, is_admin) VALUES (?, ?)",
-            rusqlite::params![member_id, no_admins.is_none() as i64],
-        )?;
-        Ok(Some(member_id))
-    })
-    .await;
+            let no_admins: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM instructor WHERE is_admin=1 LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            conn.execute(
+                "INSERT INTO instructor (member_id, is_admin) VALUES (?, ?)",
+                rusqlite::params![member_id, no_admins.is_none() as i64],
+            )?;
+            Ok(Some(member_id))
+        })
+        .await
+        .map_err(|e| AppError::internal("create_instructor", e))?;
+    let member_id = created.ok_or_else(|| AppError::conflict("already an instructor"))?;
 
-    let member_id = match created {
-        Ok(Some(id)) => id,
-        Ok(None) => return e_error(StatusCode::CONFLICT, "already an instructor"),
-        Err(e) => return server_error("create_instructor", e),
-    };
-    match with_db(&state, move |conn| {
-        db::set_instructor_password(conn.unwrap(), member_id, &password)
-    })
-    .await
-    {
-        Ok(()) => ok_true(),
-        Err(e) => server_error("create_instructor/password", e),
-    }
+    db.run(move |conn| db::set_instructor_password(conn, member_id, &password))
+        .await
+        .map_err(|e| AppError::internal("create_instructor/password", e))?;
+    Ok(ok_true())
 }
 
-pub(crate) async fn set_password(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
-    let v = match parse_json(&body) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let (name, password) = match (v.get("name"), v.get("password")) {
-        (Some(n), Some(p)) => (json_str(n).trim().to_string(), json_str(p)),
-        _ => return e_error(StatusCode::BAD_REQUEST, "'name'"),
-    };
+pub(crate) async fn set_password(db: Db, headers: HeaderMap, body: Bytes) -> Handled {
+    let state = db.state().clone();
+    let v = parse_json(&body)?;
+    let (name, password) = name_and_password(&v)?;
     if password.is_empty() {
-        return e_error(StatusCode::BAD_REQUEST, "password must not be empty");
+        return Err(AppError::bad_request("password must not be empty"));
     }
-    if let Some(r) = weak_password(&state, &password) {
-        return r;
-    }
-    let name_c = name.clone();
-    let target: Option<i64> = with_db(&state, move |conn| {
-        conn.unwrap()
-            .query_row(
+    weak_password(&state, &password)?;
+    let target: i64 = db
+        .run(move |conn| {
+            conn.query_row(
                 "SELECT i.member_id FROM instructor i JOIN member m ON m.id = i.member_id \
                  WHERE m.name=? COLLATE NOCASE",
-                [&name_c],
+                [&name],
                 |r| r.get(0),
             )
             .optional()
             .unwrap_or(None)
-    })
-    .await;
-    let target = match target {
-        Some(id) => id,
-        None => return e_error(StatusCode::NOT_FOUND, "not an instructor"),
-    };
+        })
+        .await
+        .ok_or_else(|| AppError::not_found("not an instructor"))?;
 
     let token = bsession(&headers);
     let auth = state.auth.clone();
-    let token_c = token.clone();
     let open = with_db(&state, move |conn| auth.is_open(conn)).await;
     if !open {
-        let caller = auth_member(&state, token_c).await;
-        let caller = match caller {
-            Some(c) => c,
-            None => return e_error(StatusCode::UNAUTHORIZED, "not authenticated"),
-        };
+        let caller = auth_member(&state, token.clone())
+            .await
+            .ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "not authenticated"))?;
         if caller != target && !current_is_admin(&state, token).await {
-            return e_error(
-                StatusCode::FORBIDDEN,
+            return Err(AppError::forbidden(
                 "admin required to change another instructor's password",
-            );
+            ));
         }
     }
-    match with_db(&state, move |conn| {
-        db::set_instructor_password(conn.unwrap(), target, &password)
-    })
-    .await
-    {
-        Ok(()) => ok_true(),
-        Err(e) => server_error("set_password", e),
-    }
+    db.run(move |conn| db::set_instructor_password(conn, target, &password))
+        .await
+        .map_err(|e| AppError::internal("set_password", e))?;
+    Ok(ok_true())
 }
 
-pub(crate) fn weak_password(state: &SharedState, password: &str) -> Option<Response> {
+fn weak_password(state: &SharedState, password: &str) -> Result<(), AppError> {
     if password.chars().count() < state.opts.min_password_len {
-        return Some(e_error(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "wachtwoord moet minstens {} tekens zijn",
-                state.opts.min_password_len
-            ),
-        ));
+        return Err(AppError::bad_request(format!(
+            "wachtwoord moet minstens {} tekens zijn",
+            state.opts.min_password_len
+        )));
     }
-    None
+    Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Set-admin
-// ---------------------------------------------------------------------------
 
 pub(crate) async fn set_instructor_admin(
-    State(state): State<SharedState>,
+    db: Db,
     Path(member_id): Path<i64>,
     headers: HeaderMap,
     body: Bytes,
-) -> Response {
-    if state.db.is_none() {
-        return e_error(StatusCode::SERVICE_UNAVAILABLE, "no database");
-    }
-    let admin = match require_admin(&state, bsession(&headers)).await {
-        Ok(c) => c,
-        Err(_) => return e_error(StatusCode::FORBIDDEN, "admin required"),
-    };
-    let v = match parse_json(&body) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let is_admin = match v.get("is_admin") {
-        Some(x) => json_bool(x),
-        None => return e_error(StatusCode::BAD_REQUEST, "'is_admin'"),
-    };
-    // Lockout protection: an admin cannot revoke their own admin (uses the
-    // capability's acting member — the typed equivalent of comparing
-    // _auth_member(token) == member_id).
+) -> Handled {
+    let admin = db
+        .admin(&headers, AppError::forbidden("admin required"))
+        .await?;
+    let v = parse_json(&body)?;
+    let is_admin = v
+        .get("is_admin")
+        .map(json_bool)
+        .ok_or_else(|| AppError::bad_request("'is_admin'"))?;
+    // Lockout protection: an admin cannot revoke their own admin.
     if guard_set_admin(&admin, member_id, is_admin).is_err() {
-        return e_error(StatusCode::BAD_REQUEST, "cannot remove own admin status");
+        return Err(AppError::bad_request("cannot remove own admin status"));
     }
-    let exists = with_db(&state, move |conn| {
-        conn.unwrap()
-            .query_row(
+    let exists = db
+        .run(move |conn| {
+            conn.query_row(
                 "SELECT 1 FROM instructor WHERE member_id=?",
                 [member_id],
                 |r| r.get::<_, i64>(0),
@@ -221,17 +160,13 @@ pub(crate) async fn set_instructor_admin(
             .optional()
             .unwrap_or(None)
             .is_some()
-    })
-    .await;
+        })
+        .await;
     if !exists {
-        return e_error(StatusCode::NOT_FOUND, "not an instructor");
+        return Err(AppError::not_found("not an instructor"));
     }
-    match with_db(&state, move |conn| {
-        db::set_admin(conn.unwrap(), member_id, is_admin)
-    })
-    .await
-    {
-        Ok(()) => ok_true(),
-        Err(e) => server_error("set_admin", e),
-    }
+    db.run(move |conn| db::set_admin(conn, member_id, is_admin))
+        .await
+        .map_err(|e| AppError::internal("set_admin", e))?;
+    Ok(ok_true())
 }
