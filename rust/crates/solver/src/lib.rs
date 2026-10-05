@@ -26,6 +26,9 @@ extern "C" {
         workers: i32,
         prefixing: i32,
         prune_pairs: i32,
+        present: *const i32,
+        fixed: *const i32,
+        hint: *const i32,
         out_assign: *mut i32,
         out_status: *mut i32,
         out_vals: *mut i64,
@@ -40,7 +43,21 @@ pub struct Stats {
     pub mixed: i64,
     pub distinct: i64,
     pub repeats: i64,
+    pub status_a: String,
+    pub status_b: String,
     pub status_c: String,
+}
+
+/// Extra planning input for a (re-)solve. All names are matched exactly against
+/// the roster; days must be in the config's day list and boats are 1-based.
+#[derive(Debug, Clone, Default)]
+pub struct Constraints {
+    /// `(name, day)` pairs: the kid is not in any boat that day.
+    pub absences: Vec<(String, String)>,
+    /// Pinned assignments the solver must keep.
+    pub locked: Vec<ScheduleRow>,
+    /// Previous assignment, used only as a warm start.
+    pub hint: Vec<ScheduleRow>,
 }
 
 /// End-to-end failure: a validation error or a solve-stage failure. Mirrors the
@@ -60,6 +77,10 @@ impl std::fmt::Display for SolveFailure {
     }
 }
 impl std::error::Error for SolveFailure {}
+
+fn bad_input(msg: String) -> SolveFailure {
+    SolveFailure::Solve(SolveError(msg))
+}
 
 /// Cp-SAT status code → name, matching `CpSolver.StatusName` in Python.
 fn status_name(code: i32) -> &'static str {
@@ -86,6 +107,17 @@ const STAGE_LABELS: [&str; 3] = ["A mixed", "B diversity", "C repeats"];
 pub fn solve(
     kids: &[Kid],
     cfg: &Config,
+    on_progress: Option<&mut dyn FnMut(&str, &str, i64)>,
+) -> Result<(Vec<ScheduleRow>, Stats), SolveFailure> {
+    solve_with(kids, cfg, &Constraints::default(), on_progress)
+}
+
+/// Like [`solve`], honouring absences and locked assignments and warm-starting
+/// from a previous assignment.
+pub fn solve_with(
+    kids: &[Kid],
+    cfg: &Config,
+    constraints: &Constraints,
     mut on_progress: Option<&mut dyn FnMut(&str, &str, i64)>,
 ) -> Result<(Vec<ScheduleRow>, Stats), SolveFailure> {
     // validate() first, mirroring build_model.
@@ -117,6 +149,52 @@ pub fn solve(
         .map(|d| diverse.contains(d.as_str()) as i32)
         .collect();
 
+    let kid_idx: std::collections::HashMap<&str, usize> = kids
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (k.name.as_str(), i))
+        .collect();
+    let day_idx: std::collections::HashMap<&str, usize> = days
+        .iter()
+        .enumerate()
+        .map(|(i, dd)| (dd.as_str(), i))
+        .collect();
+    let cell = |name: &str, day: &str| -> Result<usize, SolveFailure> {
+        match (kid_idx.get(name), day_idx.get(day)) {
+            (Some(k), Some(di)) => Ok(k * d + di),
+            (None, _) => Err(bad_input(format!("unknown kid '{name}'"))),
+            (_, None) => Err(bad_input(format!("unknown day '{day}'"))),
+        }
+    };
+    let mut present = vec![1i32; n * d];
+    for (name, day) in &constraints.absences {
+        present[cell(name, day)?] = 0;
+    }
+    let mut fixed = vec![-1i32; n * d];
+    for r in &constraints.locked {
+        let c = cell(&r.name, &r.day)?;
+        if r.boat < 1 || r.boat > n_boats {
+            return Err(bad_input(format!("unknown boat {}", r.boat)));
+        }
+        if present[c] == 0 {
+            return Err(bad_input(format!(
+                "'{}' is locked on {} but absent that day",
+                r.name, r.day
+            )));
+        }
+        fixed[c] = (r.boat - 1) as i32;
+    }
+    let mut hint = vec![-1i32; n * d];
+    for r in &constraints.hint {
+        // A stale hint (renamed kid, changed boat count) is harmless: skip it.
+        if let Ok(c) = cell(&r.name, &r.day) {
+            if r.boat >= 1 && r.boat <= n_boats {
+                hint[c] = (r.boat - 1) as i32;
+            }
+        }
+    }
+    let constrained = !constraints.absences.is_empty() || !constraints.locked.is_empty();
+
     let mut assign = vec![-1i32; n * d];
     let mut status = [-1i32; 3];
     let mut vals = [0i64; 3];
@@ -135,8 +213,13 @@ pub fn solve(
             cfg.stage_seconds,
             cfg.seconds,
             cfg.workers as i32,
-            1, // prefixing
+            // Prefixing pins each level to a fixed boat range, which would fight
+            // with absences (unequal boats) and with locked cells.
+            !constrained as i32,
             1, // prune_pairs
+            present.as_ptr(),
+            fixed.as_ptr(),
+            hint.as_ptr(),
             assign.as_mut_ptr(),
             status.as_mut_ptr(),
             vals.as_mut_ptr(),
@@ -191,6 +274,8 @@ pub fn solve(
         mixed: vals[0],
         distinct: vals[1],
         repeats: vals[2],
+        status_a: status_name(status[0]).to_string(),
+        status_b: status_name(status[1]).to_string(),
         status_c: status_name(status[2]).to_string(),
     };
     Ok((rows, stats))

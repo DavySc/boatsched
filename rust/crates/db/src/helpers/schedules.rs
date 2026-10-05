@@ -307,3 +307,26 @@ pub fn replace_assignments(
     tx.commit()?;
     Ok(())
 }
+
+/// The season a schedule belongs to; `None` for an unknown id.
+pub fn get_schedule_season(conn: &Connection, schedule_id: i64) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT season_id FROM schedule WHERE id=?1",
+            params![schedule_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// The raw `schedule.config` JSON; `None` for an unknown id or a NULL column.
+pub fn get_schedule_config(conn: &Connection, schedule_id: i64) -> Result<Option<String>> {
+    let v: Option<Option<String>> = conn
+        .query_row(
+            "SELECT config FROM schedule WHERE id=?1",
+            params![schedule_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(v.flatten())
+}

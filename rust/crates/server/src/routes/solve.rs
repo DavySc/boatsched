@@ -44,6 +44,17 @@ pub(crate) async fn solve_endpoint(
         }
     }
 
+    let jid = start_job(&state, kids, season_id, Constraints::default());
+    Ok(Json(json!({ "id": jid })).into_response())
+}
+
+/// Register a job and run the solve in the background; returns the job id.
+fn start_job(
+    state: &SharedState,
+    kids: Vec<boatsched_core::Kid>,
+    season_id: Option<String>,
+    constraints: Constraints,
+) -> String {
     let jid = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     {
         let mut jobs = state.jobs.lock().unwrap();
@@ -64,9 +75,38 @@ pub(crate) async fn solve_endpoint(
     let jid2 = jid.clone();
     let cfg = state.cfg.clone();
     tokio::spawn(async move {
-        run_job(state2, jid2, kids, cfg, season_id).await;
+        run_job(state2, jid2, kids, cfg, season_id, constraints).await;
     });
-    Ok(Json(json!({ "id": jid })).into_response())
+    jid
+}
+
+/// The `(absences, locks)` JSON stored beside the solver config so a schedule can
+/// be re-solved and displayed with the same inputs.
+fn config_json(cfg: &Config, c: &Constraints) -> String {
+    let mut v = serde_json::to_value(cfg).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = v.as_object_mut() {
+        if !c.absences.is_empty() {
+            obj.insert(
+                "absences".into(),
+                json!(c
+                    .absences
+                    .iter()
+                    .map(|(name, day)| json!({ "name": name, "day": day }))
+                    .collect::<Vec<_>>()),
+            );
+        }
+        if !c.locked.is_empty() {
+            obj.insert(
+                "locks".into(),
+                json!(c
+                    .locked
+                    .iter()
+                    .map(|r| json!({ "name": r.name, "day": r.day, "boat": r.boat }))
+                    .collect::<Vec<_>>()),
+            );
+        }
+    }
+    v.to_string()
 }
 
 pub(crate) async fn run_job(
@@ -75,9 +115,14 @@ pub(crate) async fn run_job(
     kids: Vec<boatsched_core::Kid>,
     cfg: Config,
     season_id: Option<String>,
+    constraints: Constraints,
 ) {
     let cfg_solve = cfg.clone();
-    let solved = tokio::task::spawn_blocking(move || solve(&kids, &cfg_solve, None)).await;
+    let constraints_solve = constraints.clone();
+    let solved = tokio::task::spawn_blocking(move || {
+        solve_with(&kids, &cfg_solve, &constraints_solve, None)
+    })
+    .await;
 
     match solved {
         Ok(Ok((rows, stats))) => {
@@ -86,7 +131,7 @@ pub(crate) async fn run_job(
                 state.db.as_ref(),
                 season_id.as_ref().and_then(|s| s.parse::<i64>().ok()),
             ) {
-                let cfg_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".into());
+                let cfg_json = config_json(&cfg, &constraints);
                 let rows_c = rows.clone();
                 // Initialise the Yjs doc from the result and persist it as
                 // yjs_state, exactly like Python's _run_job.
@@ -176,8 +221,94 @@ pub(crate) fn stats_json(stats: Option<&boatsched_solver::Stats>) -> Value {
             "mixed": s.mixed,
             "distinct": s.distinct,
             "repeats": s.repeats,
+            "status_A": s.status_a,
+            "status_B": s.status_b,
             "status_C": s.status_c,
         }),
         None => Value::Null,
     }
+}
+
+fn cell_list(
+    v: &Value,
+    key: &str,
+    with_boat: bool,
+) -> Result<Vec<(String, String, i64)>, AppError> {
+    let Some(items) = v.get(key) else {
+        return Ok(Vec::new());
+    };
+    let items = items
+        .as_array()
+        .ok_or_else(|| AppError::bad_request(format!("'{key}' must be a list")))?;
+    items
+        .iter()
+        .map(|it| {
+            let name = it.get("name").and_then(|x| x.as_str());
+            let day = it.get("day").and_then(|x| x.as_str());
+            let boat = if with_boat {
+                it.get("boat").and_then(json_int)
+            } else {
+                Some(0)
+            };
+            match (name, day, boat) {
+                (Some(n), Some(d), Some(b)) => Ok((n.to_string(), d.to_string(), b)),
+                _ => Err(AppError::bad_request(format!("bad entry in '{key}'"))),
+            }
+        })
+        .collect()
+}
+
+/// Re-solve a schedule: keep the `locks` (name, day, boat) pinned, leave kids
+/// listed in `absences` (name, day) out of every boat that day, and let the
+/// solver rearrange the rest. Produces a new schedule in the same season.
+pub(crate) async fn resolve_endpoint(
+    db: Db,
+    Path(schedule_id): Path<i64>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Handled {
+    db.admin(&headers, AppError::forbidden("admin required"))
+        .await?;
+    let v = parse_json(&body)?;
+    let absences = cell_list(&v, "absences", false)?
+        .into_iter()
+        .map(|(n, d, _)| (n, d))
+        .collect();
+    let locked = cell_list(&v, "locks", true)?
+        .into_iter()
+        .map(|(name, day, boat)| ScheduleRow {
+            day,
+            boat,
+            name,
+            level: String::new(),
+        })
+        .collect();
+
+    let loaded = db
+        .run(move |conn| {
+            let Some(sid) = db::get_schedule_season(conn, schedule_id)? else {
+                return Ok::<_, db::DbError>(None);
+            };
+            let roster = db::get_season_roster(conn, sid)?;
+            let prev = db::get_schedule(conn, schedule_id)?;
+            Ok(Some((sid, roster, prev)))
+        })
+        .await;
+    let (sid, roster, hint) = match loaded {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(AppError::not_found("no such schedule")),
+        Err(db::DbError::Missing(m)) => return Err(AppError::bad_request(m)),
+        Err(e) => return Err(AppError::internal("resolve", e)),
+    };
+    let kids = roster
+        .into_iter()
+        .map(|(name, level)| boatsched_core::Kid { name, level })
+        .collect();
+    let constraints = Constraints {
+        absences,
+        locked,
+        hint,
+    };
+    let jid = start_job(db.state(), kids, Some(sid.to_string()), constraints);
+    Ok(Json(json!({ "id": jid })).into_response())
 }
