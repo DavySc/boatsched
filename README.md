@@ -18,24 +18,7 @@ The UI language is Dutch.
 
 ## Architecture overview
 
-```
-boatsched/
-├── rust/                  Rust workspace — the production server
-│   ├── crates/core        domain types + invariants
-│   ├── crates/roster      roster CSV ingestion
-│   ├── crates/db          SQLite access (rusqlite) + migrations
-│   ├── crates/solver      OR-Tools CP-SAT model (C++ FFI)
-│   ├── crates/auth        sessions, scrypt passwords, rate-limiting
-│   ├── crates/server      Axum HTTP + WebSocket app (binary: boatsched-server)
-│   └── Dockerfile         multi-stage image (binary + pinned OR-Tools SDK)
-├── src/boatsched/
-│   └── viewer.html        the entire SPA (vanilla JS) — embedded into the
-│                          server binary at compile time via include_str!
-├── spec/                  Lean 4 formal model of record (backs the Rust impl)
-├── examples/roster_52.csv sample roster (used by the solver benchmark)
-├── deploy/                nginx + systemd config for the Hetzner box
-└── docker-compose.yml     production stack (Rust container)
-```
+See the repository layout in `CLAUDE.md` and the system map in `docs/ARCHITECTURE.md`.
 
 There is **no separate frontend build** — `viewer.html` is a self-contained
 single-page app (it loads Yjs from esm.sh for collaborative editing) and is

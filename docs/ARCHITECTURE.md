@@ -71,7 +71,7 @@ Key types worth knowing by name before you touch anything:
 
 - `core::Config` (`rust/crates/core/src/lib.rs:50`) — the full solver config,
   including `f64` timing fields (`stage_seconds`, `seconds`). It stays flat and
-  byte-identical to its old Python `asdict()` shape because it's serialized
+  byte-identical to its stored shape because it's serialized
   verbatim into the `schedule.config` TEXT column (byte-compatibility
   constraint — see §2c).
 - `core::ProblemConfig` (`lib.rs:108`) — the **float-free projection** of
@@ -110,8 +110,8 @@ Key types worth knowing by name before you touch anything:
 
 SQLite, one file, opened with `journal_mode=WAL` + `foreign_keys=ON`
 (`rust/crates/db/src/lib.rs:17`). The schema is frozen: `SCHEMA_SQL`
-(`rust/crates/db/src/schema.rs:11`) is reproduced **verbatim** from the retired
-Python implementation and is explicitly marked "do not modify" — see §2c for
+(`rust/crates/db/src/schema.rs:11`) is reproduced **verbatim** from the original
+schema and is explicitly marked "do not modify" — see §2c for
 what that means in practice. Tables: `member`, `instructor`, `season`,
 `schedule`, `boat`, `boat_assignment`, `enrollment` (level `CHECK IN
 ('k','b','A','B')`, one row per member per season), plus a legacy
@@ -169,8 +169,7 @@ non-public paths without one, and stamps security headers on the way out.
 own auth) because axum's HTTP middleware doesn't run for the WebSocket scope.
 DB-touching handlers follow one recurring pattern, `with_db(...)`: wrap the
 closure in `tokio::task::spawn_blocking` and lock the single shared
-`Arc<Mutex<Connection>>` — deliberately mirroring the old Python
-`asyncio.to_thread` model over one connection, not a connection pool.
+`Arc<Mutex<Connection>>` — one connection, not a connection pool.
 
 `POST /solve` kicks off a UUID-keyed background job (`tokio::spawn` +
 `spawn_blocking` for the actual CP-SAT call); `GET /status?id=` polls it. On
@@ -187,7 +186,7 @@ Yjs state, checks for same-day double-bookings, and writes it into
 
 ### Frontend
 
-`src/boatsched/viewer.html` is a single 1754-line file: hand-rolled CSS, static
+`src/boatsched/viewer.html` is a single file: hand-rolled CSS, static
 HTML, and one `<script type="module">` — no build step, no bundler, no
 framework. It's embedded into the server binary at compile time via
 `include_str!("../../../../src/boatsched/viewer.html")`
@@ -305,7 +304,7 @@ suggestion (`CLAUDE.md`, `spec/README.md` convention #1):
 ### c. DB schema or migration change
 
 `SCHEMA_SQL` (`rust/crates/db/src/schema.rs:11`) is **never edited in place**
-for an existing installation — it's byte-compatible with the retired Python
+for an existing installation — it's byte-compatible with the original
 DB and with every already-deployed instance. New columns/tables are added as a
 new, additive, idempotent migration function (see `add_admin_column`,
 `add_yjs_state_column`, `add_eval_tables`, etc. in the same file for the
