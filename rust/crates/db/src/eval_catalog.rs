@@ -63,10 +63,16 @@ pub static CATALOG: &[CatalogLevel] = &[
                     skill!("Zeilklaar maken fok", ["Fok hijsen"]),
                     skill!("Hijsen grootzeil", ["Volgorde", "Hijsen", "Afwerking"]),
                     skill!("Hijsen fok"),
-                    skill!("Strijken grootzeil", ["Volgorde", "Snelheid", "Zeil opdoeken"]),
+                    skill!(
+                        "Strijken grootzeil",
+                        ["Volgorde", "Snelheid", "Zeil opdoeken"]
+                    ),
                     skill!("Strijken fok"),
                     skill!("Afmeren Box Rufus", ["Volgorde", "Afwerking"]),
-                    skill!("Nachtklaar maken", ["Huikje", "Schoten/ vallen", "Breien", "Poetsen"]),
+                    skill!(
+                        "Nachtklaar maken",
+                        ["Huikje", "Schoten/ vallen", "Breien", "Poetsen"]
+                    ),
                     skill!("Verhalen schip langs de wal"),
                     skill!("Verhalen schip 180º"),
                     skill!("Bomen"),
@@ -79,8 +85,20 @@ pub static CATALOG: &[CatalogLevel] = &[
                 eval_type: "standard",
                 skills: &[
                     skill!("Sturen"),
-                    skill!("Koersen", ["Windrichting", "Namen", "Oploeven/ afvallen", "Grenskoersen VDW", "Grenskoersen ADW"]),
-                    skill!("Zeilstanden", ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]),
+                    skill!(
+                        "Koersen",
+                        [
+                            "Windrichting",
+                            "Namen",
+                            "Oploeven/ afvallen",
+                            "Grenskoersen VDW",
+                            "Grenskoersen ADW"
+                        ]
+                    ),
+                    skill!(
+                        "Zeilstanden",
+                        ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]
+                    ),
                     skill!("Overstag", ["ADW", "Commando's", "Sturen"]),
                     skill!("Dwarspeiling"),
                     skill!("Gijpen", ["VDW", "Commando's", "Werking roer"]),
@@ -94,7 +112,16 @@ pub static CATALOG: &[CatalogLevel] = &[
             CatalogCategory {
                 name: "Algemene indruk",
                 eval_type: "overall",
-                skills: &[skill!("Algemene indruk", ["Inzicht algemeen", "Inzicht bijzondere verrichtingen", "Organisatie", "Inzet", "Teamplayer"])],
+                skills: &[skill!(
+                    "Algemene indruk",
+                    [
+                        "Inzicht algemeen",
+                        "Inzicht bijzondere verrichtingen",
+                        "Organisatie",
+                        "Inzet",
+                        "Teamplayer"
+                    ]
+                )],
             },
         ],
     },
@@ -110,10 +137,16 @@ pub static CATALOG: &[CatalogLevel] = &[
                     skill!("Zeilklaar maken fok", ["Fok hijsen"]),
                     skill!("Hijsen grootzeil", ["Volgorde", "Hijsen", "Afwerking"]),
                     skill!("Hijsen fok"),
-                    skill!("Strijken grootzeil", ["Volgorde", "Snelheid", "Zeil opdoeken"]),
+                    skill!(
+                        "Strijken grootzeil",
+                        ["Volgorde", "Snelheid", "Zeil opdoeken"]
+                    ),
                     skill!("Strijken fok"),
                     skill!("Afmeren Box Rufus", ["Volgorde", "Afwerking"]),
-                    skill!("Nachtklaar maken", ["Huikje/ schoten/ vallen", "Breien/ poetsen"]),
+                    skill!(
+                        "Nachtklaar maken",
+                        ["Huikje/ schoten/ vallen", "Breien/ poetsen"]
+                    ),
                     skill!("Verhalen schip langs de wal"),
                     skill!("Verhalen schip 180º"),
                     skill!("Bomen"),
@@ -126,8 +159,18 @@ pub static CATALOG: &[CatalogLevel] = &[
                 eval_type: "standard",
                 skills: &[
                     skill!("Sturen"),
-                    skill!("Koersen", ["Windrichting/ namen", "Oploeven/ afvallen", "Grenskoersen ADW/ VDW"]),
-                    skill!("Zeilstanden", ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]),
+                    skill!(
+                        "Koersen",
+                        [
+                            "Windrichting/ namen",
+                            "Oploeven/ afvallen",
+                            "Grenskoersen ADW/ VDW"
+                        ]
+                    ),
+                    skill!(
+                        "Zeilstanden",
+                        ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]
+                    ),
                     skill!("Overstag", ["ADW", "Commando's", "Sturen"]),
                     skill!("Dwarspeiling"),
                     skill!("Gijpen", ["VDW", "Commando's", "Werking roer"]),
@@ -138,16 +181,47 @@ pub static CATALOG: &[CatalogLevel] = &[
                 name: "Bijzondere verrichtingen",
                 eval_type: "standard",
                 skills: &[
-                    skill!("Aanleggen hogerwal", ["ADW lijnen", "Dwarspeiling", "Snelheid regelen", "Wegdraaien", "Organisatie"]),
-                    skill!("Afvaren hogerwal", ["Roer deinzend", "Afduwrichting", "Fok", "Organisatie"]),
-                    skill!("MOB", ["Commando's", "Parcours", "Snelheid opl/ alv", "Dwarspeiling", "Snelheid regelen", "Organisatie"]),
+                    skill!(
+                        "Aanleggen hogerwal",
+                        [
+                            "ADW lijnen",
+                            "Dwarspeiling",
+                            "Snelheid regelen",
+                            "Wegdraaien",
+                            "Organisatie"
+                        ]
+                    ),
+                    skill!(
+                        "Afvaren hogerwal",
+                        ["Roer deinzend", "Afduwrichting", "Fok", "Organisatie"]
+                    ),
+                    skill!(
+                        "MOB",
+                        [
+                            "Commando's",
+                            "Parcours",
+                            "Snelheid opl/ alv",
+                            "Dwarspeiling",
+                            "Snelheid regelen",
+                            "Organisatie"
+                        ]
+                    ),
                     skill!("Stormronde/ halzen"),
                 ],
             },
             CatalogCategory {
                 name: "Algemene indruk",
                 eval_type: "overall",
-                skills: &[skill!("Algemene indruk", ["Inzicht algemeen", "Inzicht bijzondere verrichtingen", "Organisatie", "Inzet", "Teamplayer"])],
+                skills: &[skill!(
+                    "Algemene indruk",
+                    [
+                        "Inzicht algemeen",
+                        "Inzicht bijzondere verrichtingen",
+                        "Organisatie",
+                        "Inzet",
+                        "Teamplayer"
+                    ]
+                )],
             },
         ],
     },
@@ -177,8 +251,18 @@ pub static CATALOG: &[CatalogLevel] = &[
                 eval_type: "standard",
                 skills: &[
                     skill!("Sturen"),
-                    skill!("Koersen", ["Windrichting/ namen", "Oploeven/ afvallen", "Grenskoersen ADW/ VDW"]),
-                    skill!("Zeilstanden", ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]),
+                    skill!(
+                        "Koersen",
+                        [
+                            "Windrichting/ namen",
+                            "Oploeven/ afvallen",
+                            "Grenskoersen ADW/ VDW"
+                        ]
+                    ),
+                    skill!(
+                        "Zeilstanden",
+                        ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]
+                    ),
                     skill!("Overstag"),
                     skill!("Dwarspeiling"),
                     skill!("Gijpen"),
@@ -190,11 +274,42 @@ pub static CATALOG: &[CatalogLevel] = &[
                 name: "Bijzondere verrichtingen",
                 eval_type: "standard",
                 skills: &[
-                    skill!("Aanleggen hogerwal", ["Dwarspeiling meth.", "Opdraai meth.", "Opschieter meth.", "ADW lijnen", "Dwarspeiling", "Snelheid regelen", "Wegdraaien", "Organisatie"]),
-                    skill!("Afvaren hogerwal", ["Roer deinzend", "Afduwrichting", "Fok", "Organisatie"]),
-                    skill!("MOB", ["Commando's", "Parcours", "Snelheid opl/ alv", "Dwarspeiling", "Snelheid regelen", "Organisatie"]),
-                    skill!("Varend hijsen/ strijken", ["Organisatie", "Koers", "Kraanlijn"]),
-                    skill!("Kruisen nauw water", ["Korte slag", "Lange slag", "BPR", "Hoogtelopen"]),
+                    skill!(
+                        "Aanleggen hogerwal",
+                        [
+                            "Dwarspeiling meth.",
+                            "Opdraai meth.",
+                            "Opschieter meth.",
+                            "ADW lijnen",
+                            "Dwarspeiling",
+                            "Snelheid regelen",
+                            "Wegdraaien",
+                            "Organisatie"
+                        ]
+                    ),
+                    skill!(
+                        "Afvaren hogerwal",
+                        ["Roer deinzend", "Afduwrichting", "Fok", "Organisatie"]
+                    ),
+                    skill!(
+                        "MOB",
+                        [
+                            "Commando's",
+                            "Parcours",
+                            "Snelheid opl/ alv",
+                            "Dwarspeiling",
+                            "Snelheid regelen",
+                            "Organisatie"
+                        ]
+                    ),
+                    skill!(
+                        "Varend hijsen/ strijken",
+                        ["Organisatie", "Koers", "Kraanlijn"]
+                    ),
+                    skill!(
+                        "Kruisen nauw water",
+                        ["Korte slag", "Lange slag", "BPR", "Hoogtelopen"]
+                    ),
                     skill!("Mast strijken"),
                     skill!("Mast zetten"),
                 ],
@@ -202,7 +317,16 @@ pub static CATALOG: &[CatalogLevel] = &[
             CatalogCategory {
                 name: "Algemene indruk",
                 eval_type: "overall",
-                skills: &[skill!("Algemene indruk", ["Inzicht algemeen", "Inzicht bijzondere verrichtingen", "Organisatie", "Inzet", "Teamplayer"])],
+                skills: &[skill!(
+                    "Algemene indruk",
+                    [
+                        "Inzicht algemeen",
+                        "Inzicht bijzondere verrichtingen",
+                        "Organisatie",
+                        "Inzet",
+                        "Teamplayer"
+                    ]
+                )],
             },
         ],
     },
@@ -232,8 +356,18 @@ pub static CATALOG: &[CatalogLevel] = &[
                 eval_type: "standard",
                 skills: &[
                     skill!("Sturen"),
-                    skill!("Koersen", ["Windrichting/ namen", "Oploeven/ afvallen", "Grenskoersen ADW/ VDW"]),
-                    skill!("Zeilstanden", ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]),
+                    skill!(
+                        "Koersen",
+                        [
+                            "Windrichting/ namen",
+                            "Oploeven/ afvallen",
+                            "Grenskoersen ADW/ VDW"
+                        ]
+                    ),
+                    skill!(
+                        "Zeilstanden",
+                        ["Op koers", "Bediening fok", "Zeilsturing opl/afv"]
+                    ),
                     skill!("Overstag"),
                     skill!("Dwarspeiling"),
                     skill!("Gijpen"),
@@ -245,22 +379,68 @@ pub static CATALOG: &[CatalogLevel] = &[
                 name: "Bijzondere verrichtingen",
                 eval_type: "standard",
                 skills: &[
-                    skill!("Aanleggen hogerwal", ["Dwarspeiling meth.", "Opdraai meth.", "Opschieter meth.", "ADW lijnen", "Dwarspeiling", "Snelheid regelen", "Wegdraaien", "Organisatie"]),
-                    skill!("Afvaren hogerwal", ["Roer deinzend", "Afduwrichting", "Fok", "Organisatie"]),
-                    skill!("MOB", ["Commando's", "Parcours", "Snelheid opl/ alv", "Dwarspeiling", "Snelheid regelen", "Organisatie"]),
-                    skill!("Kruisen nauw water", ["Korte slag", "Lange slag", "BPR", "Hoogtelopen"]),
+                    skill!(
+                        "Aanleggen hogerwal",
+                        [
+                            "Dwarspeiling meth.",
+                            "Opdraai meth.",
+                            "Opschieter meth.",
+                            "ADW lijnen",
+                            "Dwarspeiling",
+                            "Snelheid regelen",
+                            "Wegdraaien",
+                            "Organisatie"
+                        ]
+                    ),
+                    skill!(
+                        "Afvaren hogerwal",
+                        ["Roer deinzend", "Afduwrichting", "Fok", "Organisatie"]
+                    ),
+                    skill!(
+                        "MOB",
+                        [
+                            "Commando's",
+                            "Parcours",
+                            "Snelheid opl/ alv",
+                            "Dwarspeiling",
+                            "Snelheid regelen",
+                            "Organisatie"
+                        ]
+                    ),
+                    skill!(
+                        "Kruisen nauw water",
+                        ["Korte slag", "Lange slag", "BPR", "Hoogtelopen"]
+                    ),
                     skill!("Varend reven"),
                     skill!("Loskomen"),
-                    skill!("Aanleggen lagerwal", ["Parcours", "Organisatie", "Inzicht", "Strijken"]),
-                    skill!("Afvaren lagerwal", ["Parcours", "Organisatie", "Inzicht", "Afduwen", "Hijsen"]),
-                    skill!("Ankeren", ["Parcours", "Organisatie", "Deinzen", "Ankermaat"]),
+                    skill!(
+                        "Aanleggen lagerwal",
+                        ["Parcours", "Organisatie", "Inzicht", "Strijken"]
+                    ),
+                    skill!(
+                        "Afvaren lagerwal",
+                        ["Parcours", "Organisatie", "Inzicht", "Afduwen", "Hijsen"]
+                    ),
+                    skill!(
+                        "Ankeren",
+                        ["Parcours", "Organisatie", "Deinzen", "Ankermaat"]
+                    ),
                     skill!("Ankerop gaan", ["Organisatie", "Inzicht", "Ankermaat"]),
                 ],
             },
             CatalogCategory {
                 name: "Algemene indruk",
                 eval_type: "overall",
-                skills: &[skill!("Algemene indruk", ["Inzicht algemeen", "Inzicht bijzondere verrichtingen", "Organisatie", "Inzet", "Teamplayer"])],
+                skills: &[skill!(
+                    "Algemene indruk",
+                    [
+                        "Inzicht algemeen",
+                        "Inzicht bijzondere verrichtingen",
+                        "Organisatie",
+                        "Inzet",
+                        "Teamplayer"
+                    ]
+                )],
             },
         ],
     },

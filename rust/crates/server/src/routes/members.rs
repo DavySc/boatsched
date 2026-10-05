@@ -88,7 +88,7 @@ pub(crate) async fn rename_member_api(
         .await
     {
         Ok(()) => Ok(ok_true()),
-        Err(db::DbError::Value(msg)) => Err(AppError::conflict(msg)),
+        Err(db::DbError::Invalid(msg)) => Err(AppError::conflict(msg)),
         Err(e) => Err(AppError::internal("rename_member", e)),
     }
 }
@@ -102,7 +102,7 @@ pub(crate) async fn delete_member_api(
         .await?;
     match db.run(move |conn| db::delete_member(conn, member_id)).await {
         Ok(()) => Ok(ok_true()),
-        Err(db::DbError::Value(msg)) => Err(AppError::conflict(msg)),
+        Err(db::DbError::Invalid(msg)) => Err(AppError::conflict(msg)),
         Err(e) => Err(AppError::internal("delete_member", e)),
     }
 }

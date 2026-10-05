@@ -53,7 +53,7 @@ pub(crate) async fn post_progress(db: Db, body: Bytes) -> Handled {
         .await
     {
         Ok(()) => Ok(ok_true()),
-        Err(db::DbError::Value(m)) => Err(AppError::bad_request(m)),
+        Err(db::DbError::Invalid(m)) => Err(AppError::bad_request(m)),
         Err(e) => Err(AppError::internal("save_progress", e)),
     }
 }

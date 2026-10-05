@@ -39,7 +39,7 @@ pub(crate) async fn solve_endpoint(
         .await;
         match res {
             Ok(()) => {}
-            Err(db::DbError::Runtime(msg)) => return Err(AppError::bad_request(msg)),
+            Err(db::DbError::Missing(msg)) => return Err(AppError::bad_request(msg)),
             Err(e) => return Err(AppError::internal("solve/add_members", e)),
         }
     }

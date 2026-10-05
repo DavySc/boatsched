@@ -1,8 +1,5 @@
-//! SQLite connection management + schema. Mirrors `db.py`.
-//!
-//! Stage (a) scope: connection PRAGMAs, schema creation, and the idempotent
-//! migrations. The member/season/schedule/instructor data helpers are added in
-//! stage (b).
+//! SQLite connection management + schema: connection PRAGMAs, schema creation,
+//! and the idempotent migrations. Data helpers live in [`helpers`].
 
 pub mod eval_catalog;
 pub mod helpers;
@@ -12,8 +9,7 @@ pub use helpers::*;
 
 use rusqlite::Connection;
 
-/// Open a connection with the same PRAGMAs as Python `get_connection`:
-/// `journal_mode=WAL` and `foreign_keys=ON`.
+/// Open a connection with `journal_mode=WAL` and `foreign_keys=ON`.
 pub fn get_connection(db_path: &str) -> rusqlite::Result<Connection> {
     let conn = Connection::open(db_path)?;
     // pragma_update would error on the WAL return row; query_row reads it back.
@@ -22,7 +18,7 @@ pub fn get_connection(db_path: &str) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// Open + create all tables (mirrors `init_db`).
+/// Open + create all tables.
 pub fn init_db(db_path: &str) -> rusqlite::Result<Connection> {
     let conn = get_connection(db_path)?;
     schema::create_tables(&conn)?;
@@ -213,10 +209,17 @@ mod tests {
 
     /// Seed a student (member 1), an instructor (member 2), and season 1.
     fn seed_student_and_instructor(conn: &Connection) {
-        conn.execute("INSERT INTO member (name) VALUES ('Kid')", []).unwrap();
-        conn.execute("INSERT INTO member (name) VALUES ('Instr')", []).unwrap();
-        conn.execute("INSERT INTO season (year) VALUES (2026)", []).unwrap();
-        conn.execute("INSERT INTO instructor (member_id, is_admin) VALUES (2, 1)", []).unwrap();
+        conn.execute("INSERT INTO member (name) VALUES ('Kid')", [])
+            .unwrap();
+        conn.execute("INSERT INTO member (name) VALUES ('Instr')", [])
+            .unwrap();
+        conn.execute("INSERT INTO season (year) VALUES (2026)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO instructor (member_id, is_admin) VALUES (2, 1)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO enrollment (member_id, season_id, level) VALUES (1, 1, 'k')",
             [],
@@ -288,7 +291,12 @@ mod tests {
         // Save is replace-all: clearing days + notes empties the student.
         save_student_progress(
             &conn,
-            &SaveProgress { member_id: 1, season_id: 1, notes: "".into(), days: vec![] },
+            &SaveProgress {
+                member_id: 1,
+                season_id: 1,
+                notes: "".into(),
+                days: vec![],
+            },
         )
         .unwrap();
         let got = get_season_progress(&conn, 1).unwrap();
@@ -300,15 +308,17 @@ mod tests {
         let conn = mem_migrated();
         seed_student_and_instructor(&conn);
         let std_skill = first_skill_id(&conn, "standard");
-        let day = |skippers, records| {
-            SaveProgress {
-                member_id: 1,
-                season_id: 1,
-                notes: String::new(),
-                days: vec![SaveDay { day: "Sat".into(), skippers, records }],
-            }
+        let day = |skippers, records| SaveProgress {
+            member_id: 1,
+            season_id: 1,
+            notes: String::new(),
+            days: vec![SaveDay {
+                day: "Sat".into(),
+                skippers,
+                records,
+            }],
         };
-        let bad = |r: Result<(), DbError>| assert!(matches!(r, Err(DbError::Value(_))), "{r:?}");
+        let bad = |r: Result<(), DbError>| assert!(matches!(r, Err(DbError::Invalid(_))), "{r:?}");
 
         // invalid weekday
         bad(save_student_progress(
@@ -317,27 +327,45 @@ mod tests {
                 member_id: 1,
                 season_id: 1,
                 notes: String::new(),
-                days: vec![SaveDay { day: "Xyz".into(), skippers: vec![], records: BTreeMap::new() }],
+                days: vec![SaveDay {
+                    day: "Xyz".into(),
+                    skippers: vec![],
+                    records: BTreeMap::new(),
+                }],
             },
         ));
         // skipper that isn't an instructor (member 1 is the student)
         bad(save_student_progress(&conn, &day(vec![1], BTreeMap::new())));
         // more than two skippers
-        bad(save_student_progress(&conn, &day(vec![2, 2, 2], BTreeMap::new())));
+        bad(save_student_progress(
+            &conn,
+            &day(vec![2, 2, 2], BTreeMap::new()),
+        ));
         // unknown skill id
         bad(save_student_progress(
             &conn,
-            &day(vec![], BTreeMap::from([("999999".into(), "attempted".into())])),
+            &day(
+                vec![],
+                BTreeMap::from([("999999".into(), "attempted".into())]),
+            ),
         ));
         // wrong status for a standard skill (overall code)
         bad(save_student_progress(
             &conn,
-            &day(vec![], BTreeMap::from([(std_skill.to_string(), "G".into())])),
+            &day(
+                vec![],
+                BTreeMap::from([(std_skill.to_string(), "G".into())]),
+            ),
         ));
         // member that isn't an enrolled student (the instructor)
         bad(save_student_progress(
             &conn,
-            &SaveProgress { member_id: 2, season_id: 1, notes: String::new(), days: vec![] },
+            &SaveProgress {
+                member_id: 2,
+                season_id: 1,
+                notes: String::new(),
+                days: vec![],
+            },
         ));
 
         // nothing was written despite the failed attempts

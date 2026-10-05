@@ -1,19 +1,10 @@
-//! axum HTTP server — a route-for-route port of `server.py`'s `create_app`.
+//! axum HTTP server: JSON/CSV routes, the Yjs collab websocket, and the embedded SPA.
 //!
-//! Scope of stage (d): every JSON/CSV HTTP route. The yrs-coupled endpoints
-//! (`POST /schedule/{id}/commit` and the `/collab/{id}` websocket) are
-//! deferred to stage (f) where the CRDT layer lands; they are intentionally not
-//! registered here yet.
-//!
-//! Parity notes:
-//! - Status codes, response key names (`error` vs `detail`), and the (Dutch)
-//!   message strings match the Python responses.
-//! - Authorization goes through [`boatsched_auth`]: admin-only handlers obtain
-//!   an [`AdminCtx`] capability before touching the DB mutation, so the
-//!   privileged call is unreachable without it (the type-level encoding from
-//!   stage c).
-//! - DB work runs on `spawn_blocking` over a single `Arc<Mutex<Connection>>`,
-//!   mirroring the Python single-connection + `asyncio.to_thread` model.
+//! - Authorization goes through [`boatsched_auth`]: admin-only handlers obtain an
+//!   [`AdminCtx`] capability (via `Db::admin`) before the privileged DB call, so
+//!   it is unreachable without it.
+//! - DB work runs on `spawn_blocking` over a single `Arc<Mutex<Connection>>`.
+//! - Handlers return `Result<Response, AppError>`; see `error.rs`.
 
 pub mod collab;
 mod error;
@@ -51,10 +42,10 @@ use boatsched_roster::{parse_roster_bytes, RosterError};
 use boatsched_solver::solve;
 use rusqlite::{Connection, OptionalExtension};
 
-/// The embedded SPA, identical to the asset the Python server serves at `/`.
+/// The embedded SPA served at `/`.
 const VIEWER_HTML: &str = include_str!("../../../../src/boatsched/viewer.html");
 
-/// Valid student levels, matching `server.py`'s `VALID_LEVELS`.
+/// Valid student levels.
 const VALID_LEVELS: [&str; 4] = ["k", "b", "A", "B"];
 
 const JOB_TTL: Duration = Duration::from_secs(3600);
