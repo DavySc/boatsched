@@ -270,7 +270,7 @@ migrations at startup, so a (re)start applies any schema changes.
 
 ```bash
 # Roll back to a previous image:
-docker tag <previous-image-id> codeberg.org/oventosti/boatsched:latest
+docker tag <previous-image-id> boatsched:local
 sudo systemctl restart boatsched-docker
 ```
 

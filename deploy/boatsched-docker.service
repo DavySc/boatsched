@@ -16,7 +16,7 @@ WorkingDirectory=/opt/boatsched
 # --- SINGLE PROCESS / SINGLE CONTAINER -------------------------------------
 # All server-side state (sessions, solve JOBS, per-schedule yrs docs + live
 # WebSockets) lives in the one container's memory and cannot be shared across
-# replicas — exactly as in the Python deployment. Do NOT scale this service.
+# replicas. Do NOT scale this service.
 #
 # The DB is bind-mounted from /var/lib/boatsched (see docker-compose.yml), so the
 # live SQLite WAL DB is reused unchanged. SOLVER_WORKERS and the admin bootstrap

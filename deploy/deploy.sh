@@ -31,11 +31,11 @@ BRANCH="${DEPLOY_BRANCH:-main}"
 DB_DIR="${DB_DIR:-/var/lib/boatsched}"
 DB_FILE="${DB_FILE:-$DB_DIR/boatsched.db}"
 VALIDATE_DB_DIR="${VALIDATE_DB_DIR:-/var/lib/boatsched-validate}"
-IMAGE_REF="${BOATSCHED_IMAGE:-codeberg.org/oventosti/boatsched:latest}"
+IMAGE_REF="${BOATSCHED_IMAGE:-boatsched:local}"
 COMPOSE="docker compose -f $DEPLOY_DIR/docker-compose.yml"
 VALIDATE_COMPOSE="docker compose -p boatsched-validate -f $DEPLOY_DIR/docker-compose.validate.yml"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"     # seconds to wait for /api/health
-BUILD_ON_HOST="${BUILD_ON_HOST:-0}"        # 1 = build image locally instead of pulling
+BUILD_ON_HOST="${BUILD_ON_HOST:-1}"        # 1 = build image on the box (default; no registry), 0 = pull
 
 export VALIDATE_DB_DIR
 

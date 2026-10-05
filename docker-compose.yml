@@ -14,7 +14,7 @@ services:
   boatsched:
     # Registry image by default; `docker compose build` also works (build-on-host
     # fallback) because the build context is declared too.
-    image: ${BOATSCHED_IMAGE:-codeberg.org/oventosti/boatsched:latest}
+    image: ${BOATSCHED_IMAGE:-boatsched:local}
     # Build context is the repo root: the image embeds src/boatsched/viewer.html
     # (outside rust/) at compile time, so the whole repo must be in context.
     build:
@@ -36,7 +36,7 @@ services:
 
     # Bind-mount the REAL DB directory so the live boatsched.db (+ WAL/SHM) is
     # used unchanged — no data migration, no named-volume copy. The Rust server
-    # opens it in WAL mode exactly like the Python one did.
+    # opens it in WAL mode.
     volumes:
       - /var/lib/boatsched:/data
 
