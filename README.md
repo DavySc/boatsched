@@ -1,7 +1,7 @@
 # boatsched
 
 A sailing camp management application served as a single, mobile-friendly SPA
-(`viewer.html`) backed by one Rust server, one SQLite database, and one login.
+(React, in `web/`) backed by one Rust server, one SQLite database, and one login.
 It bundles:
 
 - **Rooster Optimizer** — schedule generator that assigns kids to boats over
@@ -20,10 +20,11 @@ The UI language is Dutch.
 
 See the repository layout in `CLAUDE.md` and the system map in `docs/ARCHITECTURE.md`.
 
-There is **no separate frontend build** — `viewer.html` is a self-contained
-single-page app (it loads Yjs from esm.sh for collaborative editing) and is
-compiled directly into the `boatsched-server` binary. The server serves it at
-`/` and exposes the JSON/WebSocket API it calls. See `CLAUDE.md` for the full
+The frontend is a React + Vite app in `web/`, bundled into one self-contained
+`index.html` (Yjs is vendored, no CDN) that is compiled into the
+`boatsched-server` binary. The server serves it at `/` and exposes the
+JSON/WebSocket API it calls. For frontend work run `cd web && npm ci && npm run dev`
+(proxies the API to a server on :8000). See `CLAUDE.md` for the full
 route and schema reference, and `rust/README.md` for implementation notes.
 
 **New to this codebase or about to make a change?** See
@@ -45,7 +46,7 @@ frontend, auth, and CI/CD.
 ### Build & run with Docker
 
 The image is self-contained (binary + OR-Tools native libs). The build context
-is the **repo root** because the binary embeds `src/boatsched/viewer.html`:
+is the **repo root** because the binary embeds the SPA built from `web/`:
 
 ```bash
 docker build -t boatsched -f rust/Dockerfile .

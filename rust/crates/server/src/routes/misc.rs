@@ -15,6 +15,7 @@ pub(crate) async fn config_endpoint(State(state): State<SharedState>) -> Respons
         "levels": state.cfg.levels,
         "restricted": state.cfg.restricted,
         "diverse": state.cfg.diverse,
+        "adj": state.cfg.adj,
         "db": state.db.is_some(),
     }))
     .into_response()

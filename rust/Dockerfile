@@ -9,11 +9,21 @@
 # the binary links against at build time is exactly what runs it. The SDK build
 # we download MUST match that base — hence the ubuntu-24.04 OR-Tools artifact.
 #
-# Build context is the REPO ROOT (the server crate embeds the shared SPA from
-# src/boatsched/viewer.html, which lives outside rust/). Build from the repo root:
+# Build context is the REPO ROOT (the server crate embeds the SPA built from web/,
+# which lives outside rust/). Build from the repo root:
 #   docker build -t boatsched:latest -f rust/Dockerfile .
 #
 # Pin is intentional: OR-Tools 9.15.6755 matches crates/solver (protobuf ABI).
+
+# ---------------------------------------------------------------------------
+# Stage 0 — web: the React SPA, bundled into one self-contained index.html
+# ---------------------------------------------------------------------------
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
 
 # ---------------------------------------------------------------------------
 # Stage 1 — builder
@@ -55,15 +65,14 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --default-toolchain none \
     && rustup show
 
-# Build context is the REPO ROOT (not rust/): the server crate embeds the shared
-# SPA via include_str!("../../../../src/boatsched/viewer.html"), which lives
-# OUTSIDE rust/. We mirror the repo layout in the image — workspace at /build/rust,
-# viewer at /build/src/boatsched/viewer.html — so that relative path resolves.
+# Build context is the REPO ROOT (not rust/): crates/server/build.rs embeds
+# ../../../web/dist/index.html, which lives OUTSIDE rust/. We mirror the repo
+# layout in the image — workspace at /build/rust, bundle at /build/web/dist.
 # (.dockerignore keeps target/ and vendor/ out so the SDK we just fetched — not
 # the gitignored Arch one — is the only OR-Tools SDK.)
 WORKDIR /build
 COPY rust/ ./rust/
-COPY src/boatsched/viewer.html ./src/boatsched/viewer.html
+COPY --from=web /web/dist/index.html ./web/dist/index.html
 
 # Compile + run the test suite as the build-time gate, then build the release
 # binary. A failing test fails the image build (and therefore the deploy).

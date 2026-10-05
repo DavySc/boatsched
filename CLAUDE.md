@@ -28,9 +28,9 @@ boatsched/
 │   ├── crates/server              Axum HTTP + WebSocket app (binary: boatsched-server)
 │   ├── Dockerfile                 multi-stage image (binary + pinned OR-Tools SDK)
 │   └── docker-entrypoint.sh       forwards SOLVER_WORKERS → --workers
-├── src/boatsched/
-│   └── viewer.html                Unified SPA (optimizer + eval tracker) — embedded
-│                                  into the server binary at compile time
+├── web/                           React + Vite SPA (TypeScript). `npm run build` writes one
+│                                  self-contained dist/index.html, embedded into the server
+│                                  binary by crates/server/build.rs
 ├── spec/                          Lean 4 formal model of record (backs Rust)
 ├── examples/roster_52.csv         sample roster (used by the solver benchmark)
 ├── deploy/
@@ -78,18 +78,18 @@ cd spec && lake build
 - **`auth`** — in-memory session store, scrypt password hashing (byte-compatible
   with the old hashes), and the per-IP failed-login throttle.
 - **`server`** — the Axum app factory + the binary `boatsched-server`. Serves
-  `viewer.html` at `/` (embedded via `include_str!`), exposes the JSON/WS API,
+  the SPA (`web/dist/index.html`, embedded by `build.rs`) at `/`, exposes the JSON/WS API,
   and runs solve jobs on `spawn_blocking`. The binary parses CLI flags (mirroring
   the documented `boatsched-server` flags) and, whenever `--db` is passed, flips
   every security knob to its strict production value. See **Authentication &
   hardening** below.
 
 > **Build inputs outside `rust/`.** The Docker build context is the **repo root**
-> because the server binary embeds two files that live outside `rust/`:
-> `src/boatsched/viewer.html` (`include_str!`) and — for the solver benchmark —
-> `examples/roster_52.csv`. The Dockerfile `COPY`s `viewer.html` into the image
-> so the relative `include_str!` path resolves. Everything else the image needs
-> is under `rust/`.
+> because the server binary embeds the SPA built from `web/` (`build.rs` reads
+> `web/dist/index.html`; the Dockerfile has a Node stage that builds it) and — for
+> the solver benchmark — `examples/roster_52.csv`. Without a frontend build
+> (plain `cargo test`) a placeholder page is embedded, so Rust work doesn't need
+> Node. Everything else the image needs is under `rust/`.
 
 ### Server routes
 
@@ -97,7 +97,7 @@ cd spec && lake build
 
 | Method | Path | Description | Admin? |
 |--------|------|-------------|--------|
-| GET | `/` , `/index.html` | Serve `viewer.html` | public |
+| GET | `/` , `/index.html` | Serve the embedded SPA | public |
 | GET | `/config` | Solver config JSON | auth |
 | GET/POST | `/seasons` | List / create seasons | POST: admin |
 | GET | `/boats` , POST `/boat` | List boats / rename a boat | auth |
@@ -131,7 +131,7 @@ cd spec && lake build
 | POST | `/api/instructors/{member_id}/set-admin` | Grant/revoke admin (`{is_admin}`) | admin |
 | GET | `/api/health` | Health check (no auth — for uptime monitors) | public |
 
-#### Members (JSON, called by viewer.html)
+#### Members (JSON, called by the SPA)
 
 | Method | Path | Description | Admin? |
 |--------|------|-------------|--------|
@@ -192,8 +192,8 @@ legacy DB.
 - A member's level is **per season**, stored as a string `'k' | 'b' | 'A' | 'B'`
   in `enrollment` (low→high). There is no `member.level` column and no numeric
   mapping helper anymore.
-- viewer.html maps the codes to Dutch labels via `LV_LABEL`
-  (`k`=Ketelbinkie, `b`=Bemanning, `A`=A, `B`=B) and colours via `LV_COLOR`.
+- The SPA maps the codes to Dutch labels (`web/src/i18n.ts`: `k`=Ketelbinkie,
+  `b`=Bemanning, `A`=A, `B`=B) and colours (CSS `--k/--b/--A/--B`).
 - **Roster CSV semantics** (member import): `'k'`-level rows are new
   participants and are auto-created in `member`; every other level must already
   exist in `member` or an error is raised (prevents silently dropping returning
@@ -326,8 +326,8 @@ runs `cargo test` again (gate enforced twice). The cutover is
 rollback** to the previous image. **Never remove a test/CI gate without explicit
 permission.** See `deploy/README.md` for the full runbook.
 
-Quick local run (build context is the repo root — the binary embeds
-`src/boatsched/viewer.html`):
+Quick local run (build context is the repo root — the image builds `web/` and
+the binary embeds the result):
 
 ```bash
 docker build -t boatsched -f rust/Dockerfile .   # build the image

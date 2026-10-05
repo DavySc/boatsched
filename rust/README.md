@@ -40,7 +40,7 @@ cargo test -p boatsched-core --test conformance
 
 ```bash
 # Dev mode — no DB → "open mode": no auth, everyone is treated as admin.
-# Good for clicking around the embedded viewer.html SPA.
+# Good for clicking around the embedded SPA (build it first: cd ../web && npm ci && npm run build).
 cargo run -p boatsched-server
 
 # With a database → production hardening switches on automatically
@@ -54,8 +54,7 @@ BOATSCHED_ADMIN=davy BOATSCHED_ADMIN_PW='a-long-password' \
   cargo run -p boatsched-server --release -- --db boatsched.db
 ```
 
-Then open <http://localhost:8000> — it serves the same `viewer.html` SPA as the
-Python build. Flags mirror `server.py`: `--port`, `--host`, `--db`, `--boats`,
+Then open <http://localhost:8000> — it serves the embedded SPA. Flags mirror `server.py`: `--port`, `--host`, `--db`, `--boats`,
 `--adj`, `--seconds`, `--stage-seconds`, `--workers`, and the space-separated
 lists `--levels` / `--restricted` / `--diverse`.
 
@@ -216,6 +215,6 @@ or operators may notice a difference:
   login throttle, upload caps, generic 500s, security headers, admin bootstrap)
   is preserved with identical defaults, so admins configure it exactly as before.
 
-What users will **not** notice: the API, the embedded `viewer.html` SPA, every
+What users will **not** notice: the API, the embedded SPA, every
 URL, request/response shape, status code, the Dutch UI strings, and the
 scheduling results are unchanged.

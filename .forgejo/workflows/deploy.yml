@@ -43,7 +43,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential g++ pkg-config curl ca-certificates git
+            build-essential g++ pkg-config curl ca-certificates git xz-utils
 
       - name: Checkout (manual; public repo, no Node needed)
         run: |
@@ -63,6 +63,14 @@ jobs:
           mkdir -p /opt/or-tools
           tar xzf /tmp/ortools.tar.gz -C /opt/or-tools --strip-components=1
           test -f /opt/or-tools/include/ortools/sat/cp_model.h
+
+      - name: Build the web frontend (typecheck + bundle, embedded by the server)
+        run: |
+          curl -fsSL https://nodejs.org/dist/v22.17.1/node-v22.17.1-linux-x64.tar.xz \
+            | tar -xJ -C /usr/local --strip-components=1
+          cd repo/web
+          npm ci
+          npm run build
 
       - name: cargo test (workspace, locked)
         run: |

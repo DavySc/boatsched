@@ -15,7 +15,7 @@ services:
     # Registry image by default; `docker compose build` also works (build-on-host
     # fallback) because the build context is declared too.
     image: ${BOATSCHED_IMAGE:-boatsched:local}
-    # Build context is the repo root: the image embeds src/boatsched/viewer.html
+    # Build context is the repo root: the image embeds the SPA built from web/
     # (outside rust/) at compile time, so the whole repo must be in context.
     build:
       context: .
