@@ -73,8 +73,9 @@ aeneas -backend lean -split-files -loops-to-rec -subdir BoatschedExtract \
 
 `--start-from` keeps extraction to the clean cone (`Config`/`f64`/serde/`Display`
 never enter); `-loops-to-rec` emits loops as recursive functions (the shape the
-proofs reason about). Re-extraction currently a documented manual step — a CI
-*freshness gate* (re-run + `git diff --exit-code`) is the next hardening step.
+proofs reason about). CI re-runs this extraction in the
+`verify-spec` job and fails if `Types.lean`/`Funs.lean` differ from the checked-in
+files, so edit-then-forget-to-re-extract can't pass.
 
 ## Layout
 

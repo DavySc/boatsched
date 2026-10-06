@@ -101,12 +101,58 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            curl ca-certificates git git-lfs
+            curl ca-certificates git git-lfs build-essential
 
       - name: Checkout (manual; public repo, no Node needed)
         run: |
           git clone "${GITHUB_SERVER_URL:-https://codeberg.org}/${GITHUB_REPOSITORY}.git" repo
           git -C repo checkout "${GITHUB_SHA}"
+
+      # Freshness gate: re-extract the real core with the pinned Charon+Aeneas and
+      # fail if the checked-in model differs, so the refinement proofs can't go
+      # stale against rust/crates/core. Pins match spec/README.md.
+      - name: Install Charon + Aeneas and Rust nightly for extraction
+        run: |
+          mkdir -p /opt/aeneas
+          curl -fsSL https://github.com/AeneasVerif/aeneas/releases/download/nightly-2026.07.21-a827e6f/aeneas-linux-x86_64.tar.gz \
+            | tar xz -C /opt/aeneas
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --default-toolchain none
+          "$HOME/.cargo/bin/rustup" toolchain install nightly-2026-06-01 --profile minimal \
+            -c rustc-dev -c rust-src -c llvm-tools-preview
+
+      - name: Extraction is up to date (git diff --exit-code)
+        run: |
+          export PATH="/opt/aeneas:$HOME/.cargo/bin:$PATH"
+          # Standalone crate: the workspace Cargo.toml uses workspace deps, which
+          # charon would drag in; core's source is all that matters.
+          mkdir -p extract/src
+          cp -r repo/rust/crates/core/src/. extract/src/
+          cat > extract/Cargo.toml <<'EOF2'
+          [package]
+          name = "boatsched-core"
+          edition = "2021"
+          version = "0.1.0"
+
+          [lib]
+          name = "boatsched_core"
+          path = "src/lib.rs"
+
+          [dependencies]
+          thiserror = "1"
+          serde = { version = "1", features = ["derive"] }
+          EOF2
+          printf '[toolchain]\nchannel = "nightly-2026-06-01"\ncomponents = ["rustc-dev", "rust-src", "llvm-tools-preview"]\n' > extract/rust-toolchain.toml
+          cd extract
+          charon cargo --preset=aeneas \
+            --start-from 'boatsched_core::validate' \
+            --start-from 'boatsched_core::authz::can_perform' \
+            --start-from 'boatsched_core::authz::guard_set_admin'
+          aeneas -backend lean -split-files -loops-to-rec -subdir BoatschedExtract \
+            -dest out boatsched_core.llbc
+          for f in Types Funs; do
+            diff -u "../repo/spec/BoatschedExtract/$f.lean" "out/BoatschedExtract/$f.lean"
+          done
 
       - name: Install elan (Lean toolchain manager)
         run: |
