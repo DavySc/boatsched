@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy/deploy.sh — run ON THE SERVER over SSH by CI (.forgejo/workflows/deploy.yml).
+# deploy/deploy.sh — run ON THE SERVER over SSH by CI (.github/workflows/deploy.yml).
 #
 # Swaps the running app to the latest Rust container image with a HARD guarantee
 # that prod is never left broken:

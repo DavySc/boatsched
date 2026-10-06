@@ -1,7 +1,6 @@
 # Deployment — boatsched (Rust) on a Hetzner box
 
-CI/CD: on every PR and every push to `main`, a Forgejo Actions **shared runner**
-(`codeberg-small`) runs the **`test` job** (`cargo test` over the workspace). On a
+CI/CD: on every PR and every push to `main`, GitHub Actions runs the **`test` job** (`cargo test` over the workspace). On a
 push to `main`, the **`deploy` job** then runs (`deploy: needs: test`, so only if
 tests pass): it SSHes to the box and runs `deploy/deploy.sh`, which **builds the
 image on the box** (`BUILD_ON_HOST=1`) and does the never-break-prod cutover. The
@@ -10,10 +9,9 @@ deploy time). The app runs as a **single Docker container** (managed by
 `boatsched-docker.service`), bound to `127.0.0.1:8000`, behind nginx + certbot
 (TLS terminated by nginx).
 
-> **Why build on the box (no registry):** Codeberg's shared runners can't build
-> OCI images (no privileged Docker on shared infra), and Codeberg doesn't accept
-> user self-hosted runners. So CI only orchestrates the SSH; the box builds. This
-> drops the registry entirely (no `REGISTRY_*` secrets, no `docker login`).
+> **Why build on the box (no registry):** CI only orchestrates the SSH; the box
+> builds. This drops the registry entirely (no `REGISTRY_*` secrets, no
+> `docker login`), and the cutover/rollback logic relies on the image being local.
 
 > **The cutover never breaks prod.** Every deploy backs up the DB, validates the
 > new image against a *copy* of the production database on a side port, and only
@@ -64,7 +62,7 @@ no schema change, no forced re-login of stored credentials.**
 
 ---
 
-## CI secrets (Forgejo repo → Settings → Actions → Secrets)
+## CI secrets (GitHub repo → Settings → Secrets and variables → Actions)
 
 Only SSH is needed (no registry — the box builds):
 
@@ -79,8 +77,8 @@ Only SSH is needed (no registry — the box builds):
 
 ## CI runner notes
 
-`.forgejo/workflows/deploy.yml` has two jobs, both on Codeberg's shared runner
-(`runs-on: codeberg-small`):
+`.github/workflows/deploy.yml` has three jobs (`test`, `verify-spec`, `deploy`), on
+GitHub-hosted `ubuntu-24.04` runners:
 
 - **`test`** — runs on every PR and every push to `main`. In an `ubuntu:24.04`
   container (matching the OR-Tools ubuntu-24.04 SDK ABI, like `rust/Dockerfile`),
@@ -93,22 +91,9 @@ Only SSH is needed (no registry — the box builds):
   `/etc/boatsched/env`), and that on-box build runs `cargo test` again — so the
   gate holds even if you deploy by hand.
 
-Why the box builds (not CI):
-
-- Codeberg's **shared runners can't build OCI images** (no privileged Docker), and
-- Codeberg does **not** accept user **self-hosted** runners (registration is
-  refused — `runner registration token not found`), so a build-on-CI job has
-  nowhere to run.
-
-The `test` job still runs `cargo test` directly (no Docker needed) — only *image
-building* is the problem on shared runners, not compiling/testing. Building on the
-box compiles during the deploy (CPU/RAM contention for a few minutes) but does
+Building on the box compiles during the deploy (CPU/RAM contention for a few minutes) but does
 **not** disturb the running service — the new image is only swapped in after it
 validates on `:8001`.
-
-> **Want build-on-CI later?** If you move to a self-hosted Forgejo instance with a
-> runner that can build images, restore the registry `build` job (in git history)
-> and unset `BUILD_ON_HOST`. Not possible on `codeberg.org`.
 
 > **Fully manual** (no CI at all) also works: `sudo -u deploy bash
 > /opt/boatsched/deploy/deploy.sh` on the box.
@@ -155,7 +140,7 @@ usermod -aG docker deploy
 
 ```bash
 install -d -o deploy -g deploy /opt/boatsched
-sudo -u deploy git clone https://codeberg.org/Oventosti/boatsched.git /opt/boatsched
+sudo -u deploy git clone https://github.com/DavySc/boatsched.git /opt/boatsched
 ```
 
 ### 4. (Registry login — not needed)
@@ -189,7 +174,7 @@ BOATSCHED_ADMIN_PW=use-a-long-random-password
 # CP-SAT search workers (forwarded into --workers by the container entrypoint).
 SOLVER_WORKERS=2
 
-# Build the image ON THE BOX during deploy (Codeberg CI can't build images).
+# Build the image ON THE BOX during deploy.
 BUILD_ON_HOST=1
 
 # require_auth + secure_cookies auto-enable because the server runs with --db.
@@ -243,10 +228,10 @@ rate-limiting. nginx is the only public listener and terminates TLS.
 
 ## Deploy flow (automatic)
 
-1. Push to `main` on Codeberg.
-2. **test** job (shared runner `codeberg-small`): `cargo test --workspace`. The
+1. Push to `main` on GitHub.
+2. **test** job: `cargo test --workspace`. The
    deploy is gated on this (`deploy: needs: test`) — a red test means no deploy.
-3. **deploy** job (shared runner `codeberg-small`): SSHes as `deploy` and runs
+3. **deploy** job: SSHes as `deploy` and runs
    `deploy/deploy.sh`, which:
    - `git pull --ff-only` (compose/unit/script updates),
    - backs up the live DB (`sqlite3 .backup`),

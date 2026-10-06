@@ -1,11 +1,9 @@
 name: CI/CD
 
 # Test on every push to main AND on every PR; deploy only on main, and only if
-# the test job passed (deploy: needs: test). Codeberg's shared runners can't build
-# OCI images and Codeberg won't accept self-hosted runners, so:
-#   - the `test` job runs `cargo test` directly (no Docker), in an ubuntu:24.04
-#     container that matches the OR-Tools ubuntu-24.04 SDK ABI (same base as
-#     rust/Dockerfile);
+# the test job passed (deploy: needs: test).
+#   - the `test` job runs `cargo test` directly (no Docker) on ubuntu-24.04, which
+#     matches the OR-Tools ubuntu-24.04 SDK ABI (same base as rust/Dockerfile);
 #   - the `deploy` job just SSHes to the box, which builds the image itself
 #     (BUILD_ON_HOST=1) and runs the never-break-prod cutover. The on-box build
 #     ALSO runs cargo test, so the gate is enforced twice (CI + at deploy time).
@@ -16,7 +14,7 @@ on:
 
 jobs:
   test:
-    runs-on: codeberg-small
+    runs-on: ubuntu-24.04
     # Heavy: compiles the workspace + the OR-Tools C++ FFI and downloads the SDK.
     timeout-minutes: 45
     # ubuntu:24.04 to match the OR-Tools ubuntu-24.04 SDK ABI (glibc/libstdc++),
@@ -27,17 +25,6 @@ jobs:
     env:
       ORTOOLS_ROOT: /opt/or-tools
       DEBIAN_FRONTEND: noninteractive
-      # codeberg-small is a resource-starved shared runner. A cold
-      # `cargo test --workspace` here fans out into a parallel codegen/link wave
-      # on the heavy crates (yrs, axum, OR-Tools FFI) that spikes CPU+RAM enough
-      # to starve act_runner's podman daemon — it then misses the deadline on its
-      # internal control-plane calls (reading /var/run/act/workflow/*) and the job
-      # dies with "context deadline exceeded" right at the end of an otherwise-good
-      # build. Cap parallelism and drop debuginfo to keep peak usage down so the
-      # runner stays responsive. Trades a little wall-time for reliability; the
-      # test gate itself is unchanged.
-      CARGO_BUILD_JOBS: "2"
-      RUSTFLAGS: "-C debuginfo=0"
     steps:
       - name: Install build deps
         run: |
@@ -47,7 +34,7 @@ jobs:
 
       - name: Checkout (manual; public repo, no Node needed)
         run: |
-          git clone "${GITHUB_SERVER_URL:-https://codeberg.org}/${GITHUB_REPOSITORY}.git" repo
+          git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}.git" repo
           git -C repo checkout "${GITHUB_SHA}"
 
       - name: Install Rust toolchain (pinned by rust-toolchain.toml)
@@ -84,9 +71,9 @@ jobs:
     # refinement theorems that bind the Aeneas-extracted model of rust/crates/core
     # to BoatschedSpec (EXT-AUTH/EXT-VAL). Purely additive: it does NOT gate the
     # deploy job (deploy still `needs: test` only) and does not touch the Rust
-    # build. Make it a REQUIRED check in Codeberg branch protection so a proof
+    # build. Make it a REQUIRED check in branch protection so a proof
     # regression blocks merge. See spec/README.md.
-    runs-on: codeberg-small
+    runs-on: ubuntu-24.04
     # Mathlib's prebuilt oleans + the Aeneas release build are downloaded, not
     # compiled, so wall-time is dominated by the cache fetch, not CPU.
     timeout-minutes: 45
@@ -105,7 +92,7 @@ jobs:
 
       - name: Checkout (manual; public repo, no Node needed)
         run: |
-          git clone "${GITHUB_SERVER_URL:-https://codeberg.org}/${GITHUB_REPOSITORY}.git" repo
+          git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}.git" repo
           git -C repo checkout "${GITHUB_SHA}"
 
       # Freshness gate: re-extract the real core with the pinned Charon+Aeneas and
@@ -178,11 +165,9 @@ jobs:
     needs: test
     # Only deploy on a push to main — never on PRs, and never if `test` failed.
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: codeberg-small
-    container:
-      image: ghcr.io/catthehacker/ubuntu:act-latest
+    runs-on: ubuntu-24.04
     steps:
-      # ssh client + git are already present in the image; no install needed.
+      # ssh client is preinstalled on the runner.
       # The box builds the image itself (BUILD_ON_HOST=1) and runs the cutover.
       - name: Deploy over SSH
         env:

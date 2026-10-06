@@ -314,12 +314,10 @@ self-contained — the host only needs Docker. The SQLite DB is bind-mounted fro
 `/var/lib/boatsched` and reused unchanged (the Rust schema/migrations are
 byte-compatible with the Python DB).
 
-CI/CD (`.forgejo/workflows/deploy.yml`), all on the Codeberg **shared runner**
-(`codeberg-small`): a **`test` job** runs `cargo test --workspace` on every PR and
+CI/CD (`.github/workflows/deploy.yml`, GitHub Actions): a **`test` job** runs `cargo test --workspace` on every PR and
 every push to `main`; the **`deploy` job** runs only on a push to `main` and only
 if tests pass (`needs: test`). Deploy SSHes to the box → `deploy/deploy.sh`, which
-**builds the image on the box** (`BUILD_ON_HOST=1`; Codeberg CI can't build OCI
-images and won't accept self-hosted runners — so no registry). The on-box build
+**builds the image on the box** (`BUILD_ON_HOST=1`, so no registry). The on-box build
 runs `cargo test` again (gate enforced twice). The cutover is
 **never-break-prod**: backup DB → build → validate the image against a *copy* on
 `:8001` → single-writer handover on `:8000` → health-gate with **automatic

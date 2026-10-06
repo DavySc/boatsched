@@ -242,7 +242,7 @@ proof. It runs in CI as the `verify-spec` job.
 Production is one Docker container (`rust/Dockerfile`, both stages
 `ubuntu:24.04` to match the pinned OR-Tools SDK's ABI), behind nginx+certbot,
 managed by a systemd unit that runs `docker compose` in the foreground so
-`Restart=on-failure` works. CI (Forgejo/Codeberg) runs three jobs: `test`
+`Restart=on-failure` works. CI (GitHub Actions) runs three jobs: `test`
 (blocking, `cargo test --workspace`), `verify-spec` (additive, `lake build`),
 and `deploy` (`needs: test`, main-only, SSHes to the box and runs
 `deploy/deploy.sh`). Full detail in §2g and `deploy/README.md`.
@@ -371,7 +371,7 @@ call site.
 
 ### g. CI/CD change
 
-Three jobs, `.forgejo/workflows/deploy.yml`: `test` (blocking, gates every PR
+Three jobs, `.github/workflows/deploy.yml`: `test` (blocking, gates every PR
 and push), `verify-spec` (additive today — recommended to make it a required
 branch-protection check, but it doesn't currently block `deploy`), and
 `deploy` (`needs: test`, only fires on push to `main`). **Never remove or
@@ -396,7 +396,7 @@ Feature work happens on short-lived, kebab-case, task-descriptive branches
 Commits use a light `type(scope): summary` prefix (`spec(extract): ...`,
 `refactor(core,spec): ...`, `ci+docs: ...`) rather than strict Conventional
 Commits; it's a convention to match, not a linted rule. Merges into `main` go
-through a PR (Forgejo/Codeberg), and long-lived branches periodically merge
+through a PR (GitHub), and long-lived branches periodically merge
 `main` back into themselves to stay in sync rather than rebasing.
 
 | Gate | Blocking on PR/push? | Blocking for deploy? |

@@ -115,7 +115,7 @@ the model was changed to match a wrong implementation), `lake build` fails.
 > release tag with `preferReleaseBuild`, so `lake build` **downloads** its
 > prebuilt oleans rather than compiling them.
 >
-> **This runs in CI:** the `verify-spec` job in `.forgejo/workflows/deploy.yml`
+> **This runs in CI:** the `verify-spec` job in `.github/workflows/deploy.yml`
 > installs Lean via elan, runs `lake exe cache get`, then `lake build` on every
 > PR and every push — the first time the spec is gated in CI. It is purely
 > additive (it does not gate `deploy`); make it a **required check** in branch
