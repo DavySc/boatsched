@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Row } from "../types";
 import { useSession } from "../session";
-import { dayName, levelLabel, sortDays } from "../i18n";
+import { DAY_NL_SHORT, dayName, levelLabel, sortDays } from "../i18n";
 import { cellKey } from "./conflicts";
 
 export interface BoatActions {
@@ -30,6 +30,14 @@ interface MenuState {
   mode: "main" | "swap";
 }
 
+// On a phone, open on today's camp day (or the first) instead of a 6-day scroll.
+const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const initialDay = (days: string[]) => {
+  if (!matchMedia("(max-width: 700px)").matches) return "all";
+  const today = WEEKDAY[new Date().getDay()];
+  return days.includes(today) ? today : (days[0] ?? "all");
+};
+
 interface DragState {
   name: string;
   day: string;
@@ -52,6 +60,7 @@ export function BoatView(p: Props) {
 
   const boatLabel = (b: number) => boats[b] || `Boot ${b}`;
   const days = sortDays([...new Set(p.rows.map((r) => r.day))]);
+  const [shown, setShown] = useState(() => initialDay(days));
 
   const rankOf = (l: string) => levelRank[l] ?? 99;
   const sortCrew = (crew: Row[]) =>
@@ -103,10 +112,10 @@ export function BoatView(p: Props) {
       if (!(e.target as HTMLElement).closest(".menu")) setMenu(null);
     };
     const esc = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
-    document.addEventListener("mousedown", close);
+    document.addEventListener("pointerdown", close);
     document.addEventListener("keydown", esc);
     return () => {
-      document.removeEventListener("mousedown", close);
+      document.removeEventListener("pointerdown", close);
       document.removeEventListener("keydown", esc);
     };
   }, [menu]);
@@ -185,13 +194,13 @@ export function BoatView(p: Props) {
     const absentHere = p.roster.filter((r) => p.absences.has(cellKey(r.name, day)));
     const mixedCount = entries.filter((e) => new Set(e.crew.map((c) => c.level)).size > 1).length;
     return (
-      <section className="day" key={day}>
+      <section className={`day${shown === "all" || shown === day ? "" : " off"}`} key={day}>
         <div className="day-head">
           <h3>{dayName(day)}</h3>
           {restricted.has(day) && <span className="badge restricted">gelijk / aangrenzend niveau</span>}
           {diverse.has(day) && <span className="badge diverse">gemengd niveau</span>}
           <span className="meta">
-            {restricted.has(day) ? `${mixedCount} gemengde boot${mixedCount === 1 ? "" : "en"}` : `${entries.filter((e) => e.crew.length).length} boten`}
+            {restricted.has(day) ? `${mixedCount} gemengde ${mixedCount === 1 ? "boot" : "boten"}` : `${entries.filter((e) => e.crew.length).length} boten`}
           </span>
         </div>
         <div className="grid">
@@ -280,13 +289,16 @@ export function BoatView(p: Props) {
             <h4>
               {name} · {dayName(day)}
             </h4>
-            {Array.from({ length: cfg.boats }, (_, i) => i + 1)
-              .filter((b) => b !== current)
-              .map((b) => (
-                <button key={b} role="menuitem" onClick={run(() => p.move(name, day, b))}>
-                  Verplaats naar {boatLabel(b)}
-                </button>
-              ))}
+            <h4>Verplaats naar</h4>
+            <div className="menu-boats">
+              {Array.from({ length: cfg.boats }, (_, i) => i + 1)
+                .filter((b) => b !== current)
+                .map((b) => (
+                  <button key={b} role="menuitem" aria-label={`Verplaats naar ${boatLabel(b)}`} onClick={run(() => p.move(name, day, b))}>
+                    {boatLabel(b)}
+                  </button>
+                ))}
+            </div>
             <button role="menuitem" onClick={() => setMenu({ ...menu, mode: "swap" })}>
               Wissel met…
             </button>
@@ -314,6 +326,16 @@ export function BoatView(p: Props) {
 
   return (
     <div>
+      {days.length > 1 && (
+        <div className="day-tabs seg" role="group" aria-label="Dag">
+          <button aria-pressed={shown === "all"} onClick={() => setShown("all")}>Alle</button>
+          {days.map((d) => (
+            <button key={d} aria-pressed={shown === d} aria-label={dayName(d)} onClick={() => setShown(d)}>
+              {DAY_NL_SHORT[d] ?? d}
+            </button>
+          ))}
+        </div>
+      )}
       {days.map(section)}
       {menuEl()}
       {drag && (

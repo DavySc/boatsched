@@ -44,6 +44,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 /// The embedded SPA (`web/dist/index.html`, see `build.rs`) served at `/`.
 const VIEWER_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.html"));
+const VIEWER_ETAG: &str = concat!("\"", env!("SPA_HASH"), "\"");
 
 /// Valid student levels.
 const VALID_LEVELS: [&str; 4] = ["k", "b", "A", "B"];

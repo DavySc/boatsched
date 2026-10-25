@@ -1,7 +1,7 @@
 # boatsched
 
 A sailing camp management application served as a single, mobile-friendly SPA
-(React, in `web/`) backed by one Rust server, one SQLite database, and one login.
+(Preact via `preact/compat`, in `web/`) backed by one Rust server, one SQLite database, and one login.
 It bundles:
 
 - **Rooster Optimizer** — schedule generator that assigns kids to boats over
@@ -20,7 +20,7 @@ The UI language is Dutch.
 
 See the repository layout in `CLAUDE.md` and the system map in `docs/ARCHITECTURE.md`.
 
-The frontend is a React + Vite app in `web/`, bundled into one self-contained
+The frontend is a React-API app (aliased to Preact) built with Vite in `web/`, bundled into one self-contained
 `index.html` (Yjs is vendored, no CDN) that is compiled into the
 `boatsched-server` binary. The server serves it at `/` and exposes the
 JSON/WebSocket API it calls. For frontend work run `cd web && npm ci && npm run dev`

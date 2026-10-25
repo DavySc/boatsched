@@ -28,7 +28,7 @@ boatsched/
 │   ├── crates/server              Axum HTTP + WebSocket app (binary: boatsched-server)
 │   ├── Dockerfile                 multi-stage image (binary + pinned OR-Tools SDK)
 │   └── docker-entrypoint.sh       forwards SOLVER_WORKERS → --workers
-├── web/                           React + Vite SPA (TypeScript). `npm run build` writes one
+├── web/                           React-API SPA on Preact (TypeScript, Vite). `npm run build` writes one
 │                                  self-contained dist/index.html, embedded into the server
 │                                  binary by crates/server/build.rs
 ├── spec/                          Lean 4 formal model of record (backs Rust)

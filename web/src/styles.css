@@ -28,6 +28,8 @@ body {
   padding: 24px 20px 80px;
 }
 .wrap { max-width: 1180px; margin: 0 auto; }
+/* No double-tap zoom delay or grey flash on taps. */
+button, a, select, input, label, summary { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 3px solid var(--accent2); outline-offset: 2px; }
 .hidden { display: none !important; }
 .center-note { text-align: center; padding: 60px 20px; color: var(--muted); }
@@ -42,10 +44,10 @@ h1 .sub { display: block; font-size: 0.32em; letter-spacing: 0.3em; font-weight:
 
 /* controls */
 .btn-sm { border: 1px solid var(--line); background: transparent; font-family: inherit; font-size: 13px; font-weight: 600; padding: 7px 13px; border-radius: 8px; cursor: pointer; color: var(--ink); white-space: nowrap; transition: 0.15s; }
-.btn-sm:hover:not(:disabled) { border-color: var(--accent2); color: var(--accent2); }
+@media (hover: hover) { .btn-sm:hover:not(:disabled) { border-color: var(--accent2); color: var(--accent2); } }
 .btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-sm.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
-.btn-sm.primary:hover:not(:disabled) { opacity: 0.88; color: #fff; }
+@media (hover: hover) { .btn-sm.primary:hover:not(:disabled) { opacity: 0.88; color: #fff; } }
 .btn-sm.danger { color: var(--accent); }
 .seg { display: inline-flex; background: rgba(255, 255, 255, 0.5); border: 1px solid var(--line); border-radius: 999px; padding: 4px; gap: 2px; }
 .seg button { border: 0; background: transparent; font-family: inherit; font-size: 14px; font-weight: 600; padding: 8px 18px; border-radius: 999px; cursor: pointer; color: var(--ink); transition: 0.15s; }
@@ -104,6 +106,9 @@ input.yr { width: 100px; }
 
 /* day + boats */
 .day { margin-bottom: 38px; }
+.day.off { display: none; }
+.day-tabs { display: flex; position: sticky; top: 8px; z-index: 50; margin: 0 auto 18px; width: fit-content; max-width: 100%; overflow-x: auto; background: var(--surface2); box-shadow: var(--shadow); }
+.day-tabs button { padding: 8px 14px; flex-shrink: 0; }
 .day-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; border-bottom: 2px solid var(--ink); padding-bottom: 6px; flex-wrap: wrap; }
 .day-head h3 { font-size: 26px; font-weight: 800; }
 .day-head .meta { margin-left: auto; font-size: 13px; color: var(--muted); font-weight: 600; }
@@ -143,6 +148,8 @@ input.yr { width: 100px; }
 .menu h4 { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a7a62; padding: 6px 8px 2px; }
 .menu button { display: block; width: 100%; text-align: left; font-family: inherit; font-size: 14px; background: none; border: 0; padding: 8px 10px; border-radius: 6px; cursor: pointer; color: var(--ink); }
 .menu button:hover, .menu button:focus-visible { background: var(--paper2); }
+.menu-boats { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 4px; padding: 2px 4px 6px; }
+.menu .menu-boats button { text-align: center; border: 1px solid var(--line); padding: 8px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* absences */
 .absence-box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 20px; box-shadow: var(--shadow); overflow-x: auto; }
@@ -159,6 +166,7 @@ th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--pa
 th { background: var(--ink); color: var(--paper); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; position: sticky; top: 0; }
 tbody tr:hover { background: rgba(31, 122, 140, 0.06); }
 .name-cell { font-weight: 700; display: flex; align-items: center; gap: 9px; }
+.kid-table td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; }
 .pill { display: inline-block; background: var(--paper2); border-radius: 5px; padding: 2px 7px; margin: 1px 2px; font-size: 12.5px; }
 .pill.top-pair { background: var(--accent); color: #fff; font-weight: 700; }
 .pill.absent { background: #e5e7eb; color: #4b5563; }
@@ -236,7 +244,20 @@ sup.pair-cnt { font-size: 9px; margin-left: 2px; opacity: 0.85; }
 footer { text-align: center; margin-top: 50px; color: #8a7a62; font-size: 12px; font-family: ui-monospace, monospace; }
 
 @media (max-width: 600px) {
-  body { padding: 16px 12px 60px; }
+  body { padding: 12px 12px 60px; }
+  .kicker, h1 .sub { display: none; }
+  h1 { font-size: 26px; }
+  .rule { margin: 12px auto; }
+  .summary { gap: 8px; }
+  .stat span { font-size: 10px; letter-spacing: 0.04em; }
+  .eval-table-outer { padding: 12px 0 0; }
+  .eval-table th.skill-col { min-width: 120px; }
+  .eval-table td.skill-label { white-space: normal; padding: 6px 8px; }
+  .eval-table td.skill-label.sub { padding-left: 16px; }
+  .toolbar .btn-sm { flex: 1 1 auto; }
+  .toolbar .spacer { display: none; }
+  .kid-table td, .kid-table th { padding: 8px; }
+  .menu { left: 0 !important; right: 0; top: auto !important; bottom: 0; border-radius: 16px 16px 0 0; max-height: 75dvh; padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 -8px 32px rgba(13, 36, 56, 0.25); }
   .day-head h3 { font-size: 22px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .stat { flex: 1; min-width: 80px; padding: 10px 12px; }
@@ -249,11 +270,17 @@ footer { text-align: center; margin-top: 50px; color: #8a7a62; font-size: 12px; 
   .seg button { min-height: 42px; }
   .sel, input.yr, .pwd-input { min-height: 44px; }
   .crew li { min-height: 42px; }
-  .handle, .icon-btn { min-width: 36px; min-height: 36px; }
+  .handle, .icon-btn { min-width: 44px; min-height: 44px; }
+  .day-tabs button, .menu button { min-height: 44px; }
+  .cell-btn { height: 44px; }
+  .absence-table button { width: 44px; height: 40px; }
+  /* iOS zooms into any focused field under 16px. */
+  .sel, .pwd-input, input.yr, .text-input, .skipper-sel, .eval-notes, .boat-name-input { font-size: 16px; }
 }
 @media print {
   body { background: #fff; padding: 0; }
-  .user-bar, .toolbar, .controls, .conflicts, .absence-box, .handle, .icon-btn, .legend, .toasts, .season-bar { display: none !important; }
+  .day.off { display: block; }
+  .user-bar, .toolbar, .controls, .day-tabs, .conflicts, .absence-box, .handle, .icon-btn, .legend, .toasts, .season-bar { display: none !important; }
   .day { break-inside: avoid; }
   .boat { box-shadow: none; }
 }

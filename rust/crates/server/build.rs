@@ -25,11 +25,14 @@ fn embed_spa() {
     let dist = Path::new("../../../web/dist/index.html");
     println!("cargo:rerun-if-changed={}", dist.display());
     let out = Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("index.html");
-    match std::fs::read(dist) {
-        Ok(bytes) => std::fs::write(out, bytes),
-        Err(_) => std::fs::write(out, PLACEHOLDER),
-    }
-    .expect("write embedded index.html");
+    let bytes = std::fs::read(dist).unwrap_or_else(|_| PLACEHOLDER.as_bytes().to_vec());
+    std::fs::write(out, &bytes).expect("write embedded index.html");
+    // ETag for the embedded page, so a returning phone revalidates with a 304
+    // instead of downloading the whole inlined bundle again.
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    println!("cargo:rustc-env=SPA_HASH={:016x}", h.finish());
 }
 
 fn find_sdk_lib() -> Option<PathBuf> {
