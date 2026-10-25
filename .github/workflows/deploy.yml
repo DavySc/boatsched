@@ -35,6 +35,8 @@ jobs:
       - name: Checkout (manual; public repo, no Node needed)
         run: |
           git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}.git" repo
+          # A PR's GITHUB_SHA is its merge commit under refs/pull/N/merge, which a plain clone lacks.
+          git -C repo fetch origin "${GITHUB_REF}"
           git -C repo checkout "${GITHUB_SHA}"
 
       - name: Install Rust toolchain (pinned by rust-toolchain.toml)
@@ -93,6 +95,8 @@ jobs:
       - name: Checkout (manual; public repo, no Node needed)
         run: |
           git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}.git" repo
+          # A PR's GITHUB_SHA is its merge commit under refs/pull/N/merge, which a plain clone lacks.
+          git -C repo fetch origin "${GITHUB_REF}"
           git -C repo checkout "${GITHUB_SHA}"
 
       # Freshness gate: re-extract the real core with the pinned Charon+Aeneas and

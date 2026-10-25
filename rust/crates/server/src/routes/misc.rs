@@ -5,8 +5,13 @@ use serde_json::json;
 // Static + config
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn root() -> Html<&'static str> {
-    Html(VIEWER_HTML)
+pub(crate) async fn root(headers: HeaderMap) -> Response {
+    let etag = HeaderValue::from_static(VIEWER_ETAG);
+    let cache = (header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    if headers.get(header::IF_NONE_MATCH) == Some(&etag) {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag), cache]).into_response();
+    }
+    ([(header::ETAG, etag), cache], Html(VIEWER_HTML)).into_response()
 }
 
 pub(crate) async fn config_endpoint(State(state): State<SharedState>) -> Response {

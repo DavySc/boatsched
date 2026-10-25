@@ -16,7 +16,7 @@
 # Pin is intentional: OR-Tools 9.15.6755 matches crates/solver (protobuf ABI).
 
 # ---------------------------------------------------------------------------
-# Stage 0 — web: the React SPA, bundled into one self-contained index.html
+# Stage 0 — web: the SPA (React API on Preact), bundled into one self-contained index.html
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS web
 WORKDIR /web

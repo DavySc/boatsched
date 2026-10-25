@@ -188,7 +188,7 @@ Yjs state, checks for same-day double-bookings, and writes it into
 
 ### Frontend
 
-`web/` is a React + Vite + TypeScript app. `npm run build` type-checks and bundles
+`web/` is a React-API + Vite + TypeScript app; `react`/`react-dom` are aliased to `preact/compat` in `vite.config.ts` to keep the inlined bundle small. `npm run build` type-checks and bundles
 it into a single self-contained `web/dist/index.html` (via `vite-plugin-singlefile`;
 Yjs and y-websocket are npm dependencies, no CDN), which
 `rust/crates/server/build.rs` copies into the binary (`include_str!` of the copy in

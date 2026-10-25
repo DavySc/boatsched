@@ -41,8 +41,9 @@ export function SessionProvider({
 
   const load = useCallback(async () => {
     try {
-      const who = await api<Me>("/api/auth/me");
-      const [config, boatList] = await Promise.all([
+      // One round trip instead of two: on a phone the latency is the cost.
+      const [who, config, boatList] = await Promise.all([
+        api<Me>("/api/auth/me"),
         api<AppConfig>("/config"),
         api<Boat[]>("/boats").catch(() => [] as Boat[]),
       ]);

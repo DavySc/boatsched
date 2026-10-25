@@ -1,11 +1,20 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 import { viteSingleFile } from "vite-plugin-singlefile";
 
 // The server embeds the build as a single file (include_str!), so the bundle is
-// inlined into dist/index.html.
+// inlined into dist/index.html. React is aliased to Preact's compat layer: same
+// API, a fraction of the bytes on a phone's first load.
 export default defineConfig({
-  plugins: [react(), viteSingleFile()],
+  plugins: [viteSingleFile()],
+  resolve: {
+    alias: {
+      "react-dom/client": "preact/compat/client",
+      "react-dom": "preact/compat",
+      "react/jsx-runtime": "preact/jsx-runtime",
+      "react/jsx-dev-runtime": "preact/jsx-dev-runtime",
+      react: "preact/compat",
+    },
+  },
   server: {
     proxy: {
       "/api": "http://localhost:8000",
