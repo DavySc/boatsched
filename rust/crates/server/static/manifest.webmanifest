@@ -1,0 +1,11 @@
+{
+  "name": "PZK Boot Rooster",
+  "short_name": "Rooster",
+  "lang": "nl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4ece0",
+  "theme_color": "#f4ece0",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

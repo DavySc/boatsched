@@ -14,6 +14,35 @@ pub(crate) async fn root(headers: HeaderMap) -> Response {
     ([(header::ETAG, etag), cache], Html(VIEWER_HTML)).into_response()
 }
 
+// The service worker must be served from the root to control every page, and
+// with no-cache so a new release is picked up on the next visit.
+pub(crate) async fn service_worker() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../../static/sw.js"),
+    )
+        .into_response()
+}
+
+pub(crate) async fn manifest() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        include_str!("../../static/manifest.webmanifest"),
+    )
+        .into_response()
+}
+
+pub(crate) async fn icon() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        include_str!("../../static/icon.svg"),
+    )
+        .into_response()
+}
+
 pub(crate) async fn config_endpoint(State(state): State<SharedState>) -> Response {
     Json(json!({
         "boats": state.cfg.boats,

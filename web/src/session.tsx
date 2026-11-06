@@ -75,6 +75,9 @@ export function SessionProvider({
       },
       logout: async () => {
         await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+        // Cached responses hold this user's data; queued evaluations stay so
+        // they are sent after the next login.
+        if ("caches" in window) for (const k of await caches.keys()) await caches.delete(k);
         setMe(null);
         setState("anon");
       },

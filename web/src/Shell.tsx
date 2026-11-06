@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api, errMsg } from "./api";
 import { InstructorsModal } from "./admin/InstructorsModal";
 import { MembersModal } from "./admin/MembersModal";
@@ -26,7 +26,18 @@ const recall = (): number | null => {
   }
 };
 
+const onConnectivity = (fn: () => void) => {
+  window.addEventListener("online", fn);
+  window.addEventListener("offline", fn);
+  return () => {
+    window.removeEventListener("online", fn);
+    window.removeEventListener("offline", fn);
+  };
+};
+
 export function Shell() {
+  const online = useSyncExternalStore(onConnectivity, () => navigator.onLine);
+  const [menuOpen, setMenuOpen] = useState(false);
   const { me, cfg, logout } = useSession();
   const toast = useToast();
   const [seasons, setSeasons] = useState<Season[]>([]);
@@ -146,9 +157,19 @@ export function Shell() {
 
   return (
     <div className="wrap">
+      {!online && (
+        <div className="offline-bar" role="status">
+          Offline · je ziet de laatst geladen gegevens. Beoordelingen worden bewaard en later verstuurd.
+        </div>
+      )}
       <header className="top">
         {cfg.db && (
-          <div className="user-bar">
+          <button className="btn-sm menu-toggle" aria-expanded={menuOpen} onClick={() => setMenuOpen((o) => !o)}>
+            ☰ Menu
+          </button>
+        )}
+        {cfg.db && (
+          <div className={`user-bar${menuOpen ? " open" : ""}`}>
             <button className="btn-sm" onClick={() => setModal("pwd")}>{me.is_admin ? "Wachtwoorden" : "Mijn wachtwoord"}</button>
             {me.is_admin && <button className="btn-sm" onClick={() => setModal("members")}>Leden</button>}
             <button className="btn-sm" onClick={() => void logout()}>Uitloggen</button>
@@ -232,7 +253,7 @@ export function Shell() {
           {mode === "view" && (scheduleId != null || staticRows) && (
             <>
               {me.is_admin && (
-                <div className="controls">
+                <div className="controls hide-narrow">
                   <button className="btn-sm" onClick={() => { setMode("new"); setScheduleId(null); setStaticRows(undefined); }}>
                     ↻ Nieuw rooster uploaden
                   </button>

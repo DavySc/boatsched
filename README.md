@@ -139,8 +139,8 @@ passes `BOATSCHED_DB`).
 | `--adj` | max level-index spread on restricted days | `1` |
 | `--restricted` | restricted day names | `Sat Sun Tue Wed` |
 | `--diverse` | diverse day names | `Fri Mon` |
-| `--stage-seconds` | time budget for solver stages A and B | `45` |
-| `--seconds` | time budget for solver stage C | `60` |
+| `--stage-seconds` | time budget for solver stages A, B and the worst-pair part of C | `45` |
+| `--seconds` | time budget for the total-repeats part of stage C | `20` |
 | `--workers` | parallel CP-SAT search workers | `8` |
 
 ---
@@ -151,7 +151,7 @@ passes `BOATSCHED_DB`).
 |---|---|---|
 | A | Minimise mixed-level boats | `restricted` (Sat/Sun/Tue/Wed by default) |
 | B | Maximise distinct levels per boat | `diverse` (Fri/Mon by default) |
-| C | Minimise repeat co-boatings (Social-Golfer) | all days |
+| C | Minimise the most days any one pair shares a boat, then the total repeat co-boatings (Social-Golfer) | all days |
 
 Stage C usually finishes `FEASIBLE` (good, not proven minimal). Raise `--seconds` to tighten it.
 

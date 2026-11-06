@@ -29,16 +29,21 @@ pub(crate) async fn get_skills(db: Db) -> Handled {
     Ok(Json(json!({ "levels": Value::Object(levels) })).into_response())
 }
 
-/// All students' stored progress for a season. `?season_id=` required.
+/// All students' stored progress for a season. `?season_id=` required;
+/// `?member_id=` narrows it to one student (what an eval card needs).
 pub(crate) async fn get_progress(db: Db, Query(q): Query<HashMap<String, String>>) -> Handled {
     let sid = q
         .get("season_id")
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| AppError::bad_request("season_id required"))?;
-    let rows = db
+    let member = q.get("member_id").and_then(|s| s.parse::<i64>().ok());
+    let mut rows = db
         .run(move |conn| db::get_season_progress(conn, sid))
         .await
         .map_err(|e| AppError::internal("progress", e))?;
+    if let Some(m) = member {
+        rows.retain(|r| r.member_id == m);
+    }
     let data = serde_json::to_value(rows).unwrap_or(Value::Array(vec![]));
     Ok(Json(json!({ "progressData": data })).into_response())
 }
@@ -55,5 +60,20 @@ pub(crate) async fn post_progress(db: Db, body: Bytes) -> Handled {
         Ok(()) => Ok(ok_true()),
         Err(db::DbError::Invalid(m)) => Err(AppError::bad_request(m)),
         Err(e) => Err(AppError::internal("save_progress", e)),
+    }
+}
+
+/// Apply individual eval-card edits (cells, a day's skippers, notes) without
+/// touching the rest of the card. Validation failures come back as 400.
+pub(crate) async fn post_progress_changes(db: Db, body: Bytes) -> Handled {
+    let payload: db::ProgressChanges =
+        serde_json::from_slice(&body).map_err(|e| AppError::bad_request(e.to_string()))?;
+    match db
+        .run(move |conn| db::apply_progress_changes(conn, &payload))
+        .await
+    {
+        Ok(()) => Ok(ok_true()),
+        Err(db::DbError::Invalid(m)) => Err(AppError::bad_request(m)),
+        Err(e) => Err(AppError::internal("progress_changes", e)),
     }
 }

@@ -39,7 +39,7 @@ fn parse_args() -> Args {
     let mut host = "0.0.0.0".to_string();
     let mut cfg = Config {
         stage_seconds: 45.0,
-        seconds: 60.0,
+        seconds: 20.0,
         ..Config::default()
     };
     let mut db = None;
@@ -77,7 +77,7 @@ fn parse_args() -> Args {
             }
             "--seconds" => {
                 i += 1;
-                cfg.seconds = argv[i].parse().unwrap_or(60.0);
+                cfg.seconds = argv[i].parse().unwrap_or(20.0);
             }
             "--workers" => {
                 i += 1;

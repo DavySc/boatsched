@@ -89,8 +89,8 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", ");
         println!(
-            "{{\"case\": \"{}\", \"impl\": \"rust\", \"mixed\": {}, \"distinct\": {}, \"repeats\": {}, \"status_C\": \"{}\", \"stage_statuses\": [{}], \"elapsed_s\": {:.4}}}",
-            name, stats.mixed, stats.distinct, stats.repeats, stats.status_c, statuses_json, elapsed
+            "{{\"case\": \"{}\", \"impl\": \"rust\", \"mixed\": {}, \"distinct\": {}, \"repeats\": {}, \"max_meets\": {}, \"status_C\": \"{}\", \"stage_statuses\": [{}], \"elapsed_s\": {:.4}}}",
+            name, stats.mixed, stats.distinct, stats.repeats, stats.max_meets, stats.status_c, statuses_json, elapsed
         );
     }
 }
