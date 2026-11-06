@@ -23,3 +23,7 @@ rust/vendor/
 # Web frontend
 web/node_modules/
 web/dist/
+
+# Nix build output links
+result
+result-*

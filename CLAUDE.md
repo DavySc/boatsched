@@ -25,19 +25,20 @@ boatsched/
 │   ├── crates/db                  SQLite access (rusqlite) + idempotent migrations
 │   ├── crates/solver              OR-Tools CP-SAT model via C++ FFI shim
 │   ├── crates/auth                sessions, scrypt passwords, rate-limiting
-│   ├── crates/server              Axum HTTP + WebSocket app (binary: boatsched-server)
-│   ├── Dockerfile                 multi-stage image (binary + pinned OR-Tools SDK)
-│   └── docker-entrypoint.sh       forwards SOLVER_WORKERS → --workers
+│   └── crates/server              Axum HTTP + WebSocket app (binary: boatsched-server)
 ├── web/                           React-API SPA on Preact (TypeScript, Vite). `npm run build` writes one
 │                                  self-contained dist/index.html, embedded into the server
 │                                  binary by crates/server/build.rs
 ├── spec/                          Lean 4 formal model of record (backs Rust)
 ├── examples/roster_52.csv         sample roster (used by the solver benchmark)
-├── deploy/
-│   ├── nginx.conf
-│   ├── boatsched-docker.service   prod: Docker container via compose
-│   └── deploy.sh                  never-break-prod cutover (validate + auto-rollback)
-└── docker-compose.yml             prod Rust stack (+ docker-compose.validate.yml)
+├── flake.nix                      Nix packages (server, SPA, cutover script) + dev shell
+├── nix/
+│   ├── web.nix, package.nix       SPA + server builds (package build runs cargo test --workspace)
+│   └── switch.sh                  on-box gated cutover (validate on copy, backup, switch, rollback)
+└── deploy/
+    ├── deploy.sh                  build → nix copy to box → gated switch
+    ├── boatsched.service          systemd unit (runs the server from a Nix profile)
+    └── nginx.conf                 hand-installed nginx site
 ```
 
 ## Setup & commands
@@ -52,8 +53,11 @@ cd rust && cargo test -p boatsched-solver solver_parity
 # Run the server natively (serves on :8000)
 cd rust && cargo run -p boatsched-server -- --db boatsched.db
 
-# Build the production image (build context is the REPO ROOT — see below)
-docker build -t boatsched -f rust/Dockerfile .
+# Build the production server the way CI does (SPA + server + cargo test)
+nix build
+
+# Everything CI's test job checks
+nix flake check
 
 # Verify the Lean spec (a green build IS the proof check)
 cd spec && lake build
@@ -84,12 +88,12 @@ cd spec && lake build
   every security knob to its strict production value. See **Authentication &
   hardening** below.
 
-> **Build inputs outside `rust/`.** The Docker build context is the **repo root**
-> because the server binary embeds the SPA built from `web/` (`build.rs` reads
-> `web/dist/index.html`; the Dockerfile has a Node stage that builds it) and — for
-> the solver benchmark — `examples/roster_52.csv`. Without a frontend build
-> (plain `cargo test`) a placeholder page is embedded, so Rust work doesn't need
-> Node. Everything else the image needs is under `rust/`.
+> **Build inputs outside `rust/`.** The server binary embeds the SPA built from
+> `web/` (`build.rs` reads `web/dist/index.html`; `nix/package.nix` builds
+> `nix/web.nix` first and copies it there). Without a frontend build (plain
+> `cargo test`) a placeholder page is embedded, so Rust work doesn't need Node.
+> When `web/package-lock.json` changes, update `npmDepsHash` in `nix/web.nix`
+> (`nix run nixpkgs#prefetch-npm-deps web/package-lock.json`).
 
 ### Server routes
 
@@ -268,7 +272,7 @@ below). A progress callback streams per-stage results for the live UI.
 - **Do not change the DB schema shape** — it is byte-compatible with the live
   production DB. Migrations must stay additive and idempotent.
 - **Never remove or weaken a test/CI gate** (`cargo test --workspace`, the
-  conformance vectors, the on-box build gate) without explicit permission.
+  conformance vectors, the Nix package build gate) without explicit permission.
 
 ## Formal domain spec (Lean 4)
 
@@ -288,8 +292,8 @@ implementation to make agentic changes safer.
   **Two binding tiers:**
   - **Tier 1 — conformance vectors** (all of `core`): the proven oracle
     (`spec/BoatschedSpec/Conformance.lean`) is emitted to
-    `rust/crates/core/tests/conformance_vectors.json` (inside the Docker build
-    context, so the image `cargo test` gate runs it) → checked by
+    `rust/crates/core/tests/conformance_vectors.json` (inside the Nix package
+    source, so the package build's `cargo test` gate runs it) → checked by
     `rust/crates/core/tests/conformance.rs` (regen with `cd spec && lake exe
     gen-vectors > ../rust/crates/core/tests/conformance_vectors.json`).
   - **Tier 2 — Charon+Aeneas refinement** (`validate` + `authz` only): the
@@ -306,28 +310,23 @@ implementation to make agentic changes safer.
 
 ## Deployment
 
-Production runs the **Rust** server as a **single Docker container**
-(`rust/Dockerfile`, multi-stage `ubuntu:24.04`) on a Hetzner box, behind
-nginx+certbot, managed by `deploy/boatsched-docker.service`. The image bundles a
-version-pinned OR-Tools SDK (9.15.6755, `ubuntu-24.04` build) so it is
-self-contained — the host only needs Docker. The SQLite DB is bind-mounted from
-`/var/lib/boatsched` and reused unchanged (the Rust schema/migrations are
-byte-compatible with the Python DB).
+Production runs on a Hetzner box that keeps its own distro, with **Nix**
+installed. Nix builds the server (`nix/package.nix`, linking nixpkgs'
+source-built OR-Tools 9.15, so there is no prebuilt SDK or host ABI to match)
+and CI copies it into the box's Nix store. `deploy/boatsched.service` runs it
+from the profile `/nix/var/nix/profiles/per-user/deploy/boatsched` as one
+process (**never scale it**) on `127.0.0.1:8000`, behind nginx+certbot
+(`deploy/nginx.conf`, hand-installed: deploys don't touch nginx). The SQLite DB
+lives at `/var/lib/boatsched`; secrets stay in `/etc/boatsched/env`.
 
-CI/CD (`.github/workflows/deploy.yml`, GitHub Actions): a **`test` job** runs `cargo test --workspace` on every PR and
-every push to `main`; the **`deploy` job** runs only on a push to `main` and only
-if tests pass (`needs: test`). Deploy SSHes to the box → `deploy/deploy.sh`, which
-**builds the image on the box** (`BUILD_ON_HOST=1`, so no registry). The on-box build
-runs `cargo test` again (gate enforced twice). The cutover is
-**never-break-prod**: backup DB → build → validate the image against a *copy* on
-`:8001` → single-writer handover on `:8000` → health-gate with **automatic
-rollback** to the previous image. **Never remove a test/CI gate without explicit
-permission.** See `deploy/README.md` for the full runbook.
-
-Quick local run (build context is the repo root — the image builds `web/` and
-the binary embeds the result):
-
-```bash
-docker build -t boatsched -f rust/Dockerfile .   # build the image
-docker compose up -d                   # run (needs /etc/boatsched/env + DB dir)
-```
+CI/CD (`.github/workflows/deploy.yml`, GitHub Actions): a **`test` job** runs
+`nix flake check` on every PR and every push to `main` — the server package
+runs `cargo test --workspace` in its build, so no deployable binary exists
+without passing tests. The **`deploy` job** runs only on a push to `main` and
+only if tests pass (`needs: test`): `deploy/deploy.sh` builds, `nix copy`s to
+the box and runs `boatsched-switch` (`nix/switch.sh`), which is
+**never-break-prod**: validate the new server against a *copy* of the DB on
+`:8001` → back up the DB → switch the profile and restart → health-gate `:8000`
+→ **automatic rollback** to the previous profile generation. **Never remove a
+test/CI gate without explicit permission.** See `deploy/README.md` for the full
+runbook.

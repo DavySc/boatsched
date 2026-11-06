@@ -2,11 +2,13 @@ name: CI/CD
 
 # Test on every push to main AND on every PR; deploy only on main, and only if
 # the test job passed (deploy: needs: test).
-#   - the `test` job runs `cargo test` directly (no Docker) on ubuntu-24.04, which
-#     matches the OR-Tools ubuntu-24.04 SDK ABI (same base as rust/Dockerfile);
-#   - the `deploy` job just SSHes to the box, which builds the image itself
-#     (BUILD_ON_HOST=1) and runs the never-break-prod cutover. The on-box build
-#     ALSO runs cargo test, so the gate is enforced twice (CI + at deploy time).
+#   - the `test` job runs `nix flake check`: it builds the server package, whose
+#     build runs `cargo test --workspace` against the locked Cargo.lock (the CI
+#     gate);
+#   - the `deploy` job runs deploy/deploy.sh: it builds the same package, copies
+#     it into the box's Nix store and runs the gated cutover (validate on a DB
+#     copy, back up, switch, health-gate, roll back). The deployed server can't
+#     exist without its tests passing, because they run inside its build.
 on:
   push:
     branches: [main]
@@ -15,57 +17,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    # Heavy: compiles the workspace + the OR-Tools C++ FFI and downloads the SDK.
     timeout-minutes: 45
-    # ubuntu:24.04 to match the OR-Tools ubuntu-24.04 SDK ABI (glibc/libstdc++),
-    # exactly like rust/Dockerfile. Every step is shell-only (no JS actions) so the
-    # container needs no Node — we clone manually instead of using actions/checkout.
-    container:
-      image: ubuntu:24.04
-    env:
-      ORTOOLS_ROOT: /opt/or-tools
-      DEBIAN_FRONTEND: noninteractive
     steps:
-      - name: Install build deps
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential g++ pkg-config curl ca-certificates git xz-utils
-
-      - name: Checkout (manual; public repo, no Node needed)
-        run: |
-          git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}.git" repo
-          # A PR's GITHUB_SHA is its merge commit under refs/pull/N/merge, which a plain clone lacks.
-          git -C repo fetch origin "${GITHUB_REF}"
-          git -C repo checkout "${GITHUB_SHA}"
-
-      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
-        run: |
-          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-            | sh -s -- -y --no-modify-path --default-toolchain none
-          cd repo/rust && "$HOME/.cargo/bin/rustup" show
-
-      - name: Fetch OR-Tools SDK (pinned 9.15.6755, ubuntu-24.04)
-        run: |
-          curl -fsSL -o /tmp/ortools.tar.gz \
-            "https://github.com/google/or-tools/releases/download/v9.15/or-tools_amd64_ubuntu-24.04_cpp_v9.15.6755.tar.gz"
-          mkdir -p /opt/or-tools
-          tar xzf /tmp/ortools.tar.gz -C /opt/or-tools --strip-components=1
-          test -f /opt/or-tools/include/ortools/sat/cp_model.h
-
-      - name: Build the web frontend (typecheck + bundle, embedded by the server)
-        run: |
-          curl -fsSL https://nodejs.org/dist/v22.17.1/node-v22.17.1-linux-x64.tar.xz \
-            | tar -xJ -C /usr/local --strip-components=1
-          cd repo/web
-          npm ci
-          npm run build
-
-      - name: cargo test (workspace, locked)
-        run: |
-          . "$HOME/.cargo/env"
-          cd repo/rust
-          cargo test --workspace --locked
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: nix flake check (builds the server, running cargo test --workspace)
+        run: nix flake check -L
 
   verify-spec:
     # Build the Lean 4 formal spec — this type-checks every definition AND every
@@ -170,9 +127,12 @@ jobs:
     # Only deploy on a push to main — never on PRs, and never if `test` failed.
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # One deploy at a time; a newer push waits rather than racing the switch.
+    concurrency: deploy
     steps:
-      # ssh client is preinstalled on the runner.
-      # The box builds the image itself (BUILD_ON_HOST=1) and runs the cutover.
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
       - name: Deploy over SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -181,20 +141,11 @@ jobs:
           SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-
-          # Write the deploy key and pinned host key to a private temp dir.
           KEY_DIR="$(mktemp -d)"
           trap 'rm -rf "$KEY_DIR"' EXIT
           install -m 600 /dev/null "$KEY_DIR/id_deploy"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$KEY_DIR/id_deploy"
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$KEY_DIR/known_hosts"
-
           # Host key is pinned via known_hosts — StrictHostKeyChecking stays on.
-          # deploy.sh: pull → backup → build-on-host → validate-on-copy → handover
-          # → health-gate → auto-rollback. It never leaves prod broken.
-          ssh -i "$KEY_DIR/id_deploy" \
-              -o IdentitiesOnly=yes \
-              -o UserKnownHostsFile="$KEY_DIR/known_hosts" \
-              -o StrictHostKeyChecking=yes \
-              "$SSH_USER@$SSH_HOST" \
-              'bash /opt/boatsched/deploy/deploy.sh'
+          export NIX_SSHOPTS="-i $KEY_DIR/id_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$KEY_DIR/known_hosts -o StrictHostKeyChecking=yes"
+          deploy/deploy.sh "$SSH_USER@$SSH_HOST"

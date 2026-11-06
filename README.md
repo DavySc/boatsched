@@ -39,18 +39,15 @@ frontend, auth, and CI/CD.
 
 ### Prerequisites
 
-- Docker (the only requirement for a run-it-locally build), or
+- Nix with flakes (`nix develop` gives cargo, OR-Tools, Node and sqlite), or
 - a Rust toolchain + the OR-Tools SDK for native development (see
   `rust/README.md`).
 
-### Build & run with Docker
-
-The image is self-contained (binary + OR-Tools native libs). The build context
-is the **repo root** because the binary embeds the SPA built from `web/`:
+### Build & run with Nix
 
 ```bash
-docker build -t boatsched -f rust/Dockerfile .
-docker compose up -d      # needs /etc/boatsched/env and /var/lib/boatsched
+nix build
+./result/bin/boatsched-server --db boatsched.db
 # App at http://localhost:8000
 ```
 
@@ -87,31 +84,29 @@ The Lean spec is verified separately with `cd spec && lake build`.
 > log in. Always run behind the provided nginx + TLS config; never expose port
 > 8000 to the internet directly.
 
-Production runs the Rust server as a single Docker container behind
-nginx+certbot. **`deploy/README.md` is the authoritative runbook** (provisioning,
-CI secrets, the never-break-prod cutover, and rollback); the essentials:
+Production runs on a Hetzner box with Nix installed (the box keeps its own
+distro). **`deploy/README.md` is the authoritative runbook** (setup, CI secrets,
+the gated cutover, and rollback); the essentials:
 
-- Image: `rust/Dockerfile` (multi-stage `ubuntu:24.04`) bundles the binary + a
-  pinned OR-Tools SDK, so the host only needs Docker. Built on the box by CI and
-  run via `docker-compose.yml` + `deploy/boatsched-docker.service`.
-- Data: the SQLite DB is bind-mounted from `/var/lib/boatsched` and reused
-  across deploys; the Rust server runs idempotent migrations at startup.
-- nginx (`deploy/nginx.conf`): the app binds `127.0.0.1:8000` with the
-  `/collab/` WebSocket upgrade and `X-Real-IP` for login rate-limiting.
+- Package: `nix build` builds the SPA and the server against nixpkgs' OR-Tools;
+  the build runs `cargo test --workspace`, so an untested binary can't exist.
+- Service: `deploy/boatsched.service` runs the Nix-built server on
+  `127.0.0.1:8000`, behind nginx + certbot (`deploy/nginx.conf`, installed by
+  hand) with the `/collab/` WebSocket upgrade and `X-Real-IP` for login
+  rate-limiting.
+- Data: `/var/lib/boatsched/boatsched.db`, backed up before every deploy to
+  `/var/lib/boatsched/backups/`.
 
 ```bash
-# build + run locally
-docker build -t boatsched -f rust/Dockerfile .
-docker compose up -d        # needs /etc/boatsched/env and /var/lib/boatsched
-
-# on the box, CI runs the gated cutover for you:
-bash /opt/boatsched/deploy/deploy.sh   # backup → validate-on-copy → handover → auto-rollback
+nix build                      # server binary at ./result/bin/boatsched-server
+nix develop                    # shell with cargo, OR-Tools, Node, sqlite
+deploy/deploy.sh deploy@HOST   # what CI runs on every push to main
 ```
 
 ### Environment
 
-Production reads these environment variables (via the systemd `EnvironmentFile`
-or Docker `.env`):
+Production reads these environment variables (from `/etc/boatsched/env`, the
+service's `EnvironmentFile`):
 
 | variable | purpose | required |
 |---|---|---|
@@ -122,8 +117,7 @@ or Docker `.env`):
 | `BOATSCHED_MIN_PASSWORD_LEN` | minimum password length (default 8 in prod) | no |
 | `BOATSCHED_LOGIN_MAX_FAIL` | failed logins per IP before 429 (default 10) | no |
 
-The database path is set via the `--db` CLI flag (the container entrypoint
-passes `BOATSCHED_DB`).
+The database path is set via the `--db` CLI flag (`deploy/boatsched.service` passes it).
 
 ---
 
@@ -161,5 +155,4 @@ Stage C usually finishes `FEASIBLE` (good, not proven minimal). Raise `--seconds
 
 - In production every route requires authentication; the first admin is seeded from `BOATSCHED_ADMIN` / `BOATSCHED_ADMIN_PW` (see Deployment). In local open mode (no password set) auth is bypassed for convenience.
 - Stage C is NP-hard; more `--seconds` gives a better but not necessarily optimal result.
-- The Docker image is self-contained — no external services required.
 </content>

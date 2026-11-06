@@ -1,0 +1,44 @@
+[Unit]
+Description=boatsched (Rust/axum + OR-Tools CP-SAT + yrs collab)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Same user as the old container, so the existing /var/lib/boatsched (owned by
+# deploy) and /etc/boatsched/env (root:deploy 0640) work unchanged.
+User=deploy
+Group=deploy
+WorkingDirectory=/var/lib/boatsched
+
+# SINGLE PROCESS: sessions, solve jobs and collab docs live in memory. Never
+# run a second instance.
+#
+# The profile is switched by boatsched-switch (deploy/deploy.sh); a rollback is
+# just pointing it at the previous generation and restarting.
+Environment=SOLVER_WORKERS=2
+EnvironmentFile=/etc/boatsched/env
+Environment=BOATSCHED_REQUIRE_AUTH=1 BOATSCHED_SECURE_COOKIES=1 BOATSCHED_MIN_PASSWORD_LEN=8
+ExecStart=/nix/var/nix/profiles/per-user/deploy/boatsched/bin/boatsched-server \
+    --db /var/lib/boatsched/boatsched.db --host 127.0.0.1 --port 8000 \
+    --workers ${SOLVER_WORKERS}
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/boatsched
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+# No MemoryDenyWriteExecute: OR-Tools maps executable memory.
+
+[Install]
+WantedBy=multi-user.target
