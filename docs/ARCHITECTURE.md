@@ -430,8 +430,8 @@ cd spec && lake exe gen-vectors > ../rust/crates/core/tests/conformance_vectors.
 # Re-extract the Tier-2 Aeneas model after changing validate/authz logic
 # (exact pinned command: see spec/README.md "Regenerating the extracted model")
 
-# Production image (build context is the REPO ROOT — builds web/ and embeds it)
-docker build -t boatsched -f rust/Dockerfile .
+# Production build (builds web/, embeds it, runs cargo test --workspace)
+nix build
 ```
 
 | Doc | Owns |
