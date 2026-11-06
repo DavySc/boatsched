@@ -9,6 +9,7 @@
 // optima (CP-SAT is nondeterministic with multiple workers); objective values
 // and structural invariants are the parity bar.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -32,11 +33,12 @@ inline int xi(int k, int d, int b, int D, int B) { return (k * D + d) * B + b; }
 extern "C" {
 
 // Returns:
-//   0 = ran (inspect out_status/out_vals per stage; -1 status = stage not run)
+//   0 = ran (inspect out_status/out_vals per stage; -1 status = stage not run).
+//       out_assign is filled whenever stages A and B succeeded.
 //   2 = C++ exception (out_err populated)
 //
-// out_assign must have capacity n_kids*n_days; out_status/out_vals capacity 3
-// (stages A, B, C).
+// out_assign must have capacity n_kids*n_days; out_status/out_vals capacity 4
+// (stages A, B, C-max, C).
 int32_t bs_cpsat_solve(
     int32_t n_kids,
     const int32_t* lvl_of,            // [n_kids] level index per kid
@@ -55,14 +57,14 @@ int32_t bs_cpsat_solve(
     const int32_t* fixed,             // [n_kids*n_days] locked boat index, -1 = free, or null
     const int32_t* hint,              // [n_kids*n_days] previous boat index for warm start, -1 = none, or null
     int32_t* out_assign,              // [n_kids*n_days] boat index (0-based)
-    int32_t* out_status,              // [3] CpSolverStatus per stage (-1 = skip)
-    int64_t* out_vals,                // [3] objective value per stage
+    int32_t* out_status,              // [4] CpSolverStatus per stage (-1 = skip)
+    int64_t* out_vals,                // [4] objective value per stage
     char* out_err,
     int32_t err_cap) {
   try {
     const int N = n_kids, B = n_boats, D = n_days, L = n_levels;
     const int cap = N / B;
-    for (int i = 0; i < 3; ++i) { out_status[i] = -1; out_vals[i] = 0; }
+    for (int i = 0; i < 4; ++i) { out_status[i] = -1; out_vals[i] = 0; }
 
     bool has_diverse = false;
     for (int d = 0; d < D; ++d) has_diverse |= day_diverse[d] != 0;
@@ -187,9 +189,26 @@ int32_t bs_cpsat_solve(
     IntVar total_distinct = m.NewIntVar(Domain(0, std::max<int>(1, (int)diverse_terms.size())));
     if (!diverse_terms.empty()) m.AddEquality(total_distinct, LinearExpr::Sum(diverse_terms));
     else m.AddEquality(total_distinct, 0);
+    // A level can show up in at most min(present kids of that level, boats)
+    // boats per day. Without this bound CP-SAT finds the optimum quickly but
+    // cannot prove it, and burns the whole stage budget.
+    {
+      int64_t ub = 0;
+      for (int d = 0; d < D; ++d) {
+        if (!day_diverse[d]) continue;
+        for (int li = 0; li < L; ++li) {
+          int n_l = 0;
+          for (int k = 0; k < N; ++k) n_l += (lvl_of[k] == li && is_present(k, d)) ? 1 : 0;
+          ub += std::min(n_l, B);
+        }
+      }
+      m.AddLessOrEqual(total_distinct, ub);
+    }
 
     // C: minimize repeat co-boatings (with pair pruning).
     std::vector<IntVar> pair_rep;
+    // The worst pair: how many days the most-together pair shares a boat.
+    IntVar max_meets = m.NewIntVar(Domain(0, D));
     for (int k1 = 0; k1 < N; ++k1) {
       for (int k2 = k1 + 1; k2 < N; ++k2) {
         if (prune_pairs) {
@@ -213,6 +232,7 @@ int32_t bs_cpsat_solve(
         }
         IntVar rep = m.NewIntVar(Domain(0, D));
         m.AddGreaterOrEqual(rep, LinearExpr::Sum(meets) - 1);
+        m.AddGreaterOrEqual(max_meets, LinearExpr::Sum(meets));
         pair_rep.push_back(rep);
       }
     }
@@ -260,20 +280,42 @@ int32_t bs_cpsat_solve(
           if (has_diverse ? (day_diverse[d] != 0) : true)
             m.AddHint(x[xi(k, d, b, D, B)], SolutionBooleanValue(rB, x[xi(k, d, b, D, B)]));
 
-    // Stage C (minimize).
-    m.Minimize(total_repeats);
-    CpSolverResponse rC = SolveWithParameters(m.Build(), make_params(seconds));
-    out_status[2] = (int32_t)rC.status();
-    if (!ok(out_status[2])) return 0;
-    int64_t vc = SolutionIntegerValue(rC, total_repeats);
-    out_vals[2] = vc;
+    // The repeat stages only polish a schedule that already meets every hard
+    // rule, so if one runs out of time the previous stage's schedule is kept
+    // instead of failing the whole solve.
+    const CpSolverResponse* best = &rB;
 
-    // Extract assignment from stage C.
+    // Stage C-max: no pair should share a boat more often than necessary.
+    // This comes before the total so a few pairs can't absorb all repeats.
+    m.Minimize(max_meets);
+    CpSolverResponse rM = SolveWithParameters(m.Build(), make_params(stage_seconds));
+    out_status[2] = (int32_t)rM.status();
+    CpSolverResponse rC;
+    if (ok(out_status[2])) {
+      best = &rM;
+      out_vals[2] = SolutionIntegerValue(rM, max_meets);
+      m.AddLessOrEqual(max_meets, out_vals[2]);
+      m.ClearHints();
+      for (int k = 0; k < N; ++k)
+        for (int d = 0; d < D; ++d)
+          for (int b = 0; b < B; ++b)
+            m.AddHint(x[xi(k, d, b, D, B)], SolutionBooleanValue(rM, x[xi(k, d, b, D, B)]));
+
+      // Stage C (minimize total repeats under the worst-pair cap).
+      m.Minimize(total_repeats);
+      rC = SolveWithParameters(m.Build(), make_params(seconds));
+      out_status[3] = (int32_t)rC.status();
+      if (ok(out_status[3])) {
+        best = &rC;
+        out_vals[3] = SolutionIntegerValue(rC, total_repeats);
+      }
+    }
+
     for (int k = 0; k < N; ++k)
       for (int d = 0; d < D; ++d) {
         int boat = -1;
         for (int b = 0; b < B; ++b)
-          if (SolutionBooleanValue(rC, x[xi(k, d, b, D, B)])) { boat = b; break; }
+          if (SolutionBooleanValue(*best, x[xi(k, d, b, D, B)])) { boat = b; break; }
         out_assign[k * D + d] = boat;
       }
     return 0;

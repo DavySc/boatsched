@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errMsg } from "../api";
 import { useSession } from "../session";
 import { sortDays } from "../i18n";
@@ -9,7 +9,7 @@ import { AbsenceEditor } from "./AbsenceEditor";
 import { BoatView, type BoatActions } from "./BoatView";
 import { ConflictPanel } from "./ConflictPanel";
 import { KidView } from "./KidView";
-import { cellKey, computeConflicts } from "./conflicts";
+import { cellKey, computeConflicts, pairCounts } from "./conflicts";
 import { useYSchedule } from "./useYSchedule";
 
 interface Props {
@@ -130,8 +130,10 @@ function Body(p: BodyProps) {
   const toast = useToast();
   const [view, setView] = useState<"boat" | "kid">("boat");
   const [card, setCard] = useState<{ name: string; level: string } | null>(null);
+  const closeCard = useCallback(() => setCard(null), []);
   const [startDate, setStartDate] = useState(p.startDate);
   const [committing, setCommitting] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   const days = useMemo(() => sortDays([...new Set(p.rows.map((r) => r.day))]), [p.rows]);
   const levelRank = useMemo(() => Object.fromEntries(cfg.levels.map((l, i) => [l, i])), [cfg.levels]);
@@ -157,6 +159,17 @@ function Body(p: BodyProps) {
     () => new Set(conflicts.filter((c) => c.boat !== undefined && (c.kind === "niveau" || c.kind === "bezetting")).map((c) => `${c.day}|${c.boat}`)),
     [conflicts],
   );
+
+  // Recomputed from the live rows, so hand edits show their effect immediately.
+  const worstPair = useMemo(() => {
+    let max = 0;
+    let n = 0;
+    for (const c of pairCounts(p.rows).values()) {
+      if (c > max) [max, n] = [c, 1];
+      else if (c === max) n++;
+    }
+    return { max, n };
+  }, [p.rows]);
 
   const locked = startDate != null && startDate <= localToday();
 
@@ -198,15 +211,23 @@ function Body(p: BodyProps) {
     URL.revokeObjectURL(url);
   };
 
-  const approx = p.stats && [p.stats.status_A, p.stats.status_B, p.stats.status_C].some((s) => s && s !== "OPTIMAL");
+  const approx = p.stats && [p.stats.status_A, p.stats.status_B, p.stats.status_max, p.stats.status_C].some((s) => s && s !== "OPTIMAL");
 
   return (
     <div>
-      {p.stats && (
+      {p.rows.length > 0 && (
         <div className="summary">
-          <div className="stat"><b>{p.stats.mixed}</b><span>gemengde boten</span></div>
-          <div className="stat"><b>{p.stats.distinct}</b><span>distinct-niveau totaal</span></div>
-          <div className="stat"><b>{p.stats.repeats}</b><span>herhaalde koppels</span></div>
+          <div className="stat" title={`${worstPair.n} ${worstPair.n === 1 ? "koppel zit" : "koppels zitten"} ${worstPair.max} dagen samen`}>
+            <b>{worstPair.max} {worstPair.max === 1 ? "dag" : "dagen"}</b>
+            <span>max. samen in boot</span>
+          </div>
+          {p.stats && (
+            <>
+              <div className="stat"><b>{p.stats.mixed}</b><span>gemengde boten</span></div>
+              <div className="stat"><b>{p.stats.distinct}</b><span>distinct-niveau totaal</span></div>
+              <div className="stat"><b>{p.stats.repeats}</b><span>herhalingen totaal</span></div>
+            </>
+          )}
         </div>
       )}
       {approx && (
@@ -231,6 +252,10 @@ function Body(p: BodyProps) {
         )}
         {!p.canEdit && p.scheduleId != null && <span className="badge restricted">Alleen-lezen · alleen beheerders</span>}
         {p.canEdit && locked && <span className="badge restricted">Startdatum verstreken</span>}
+        <button className="btn-sm actions-toggle" aria-expanded={actionsOpen} onClick={() => setActionsOpen((o) => !o)}>
+          Acties {actionsOpen ? "▴" : "▾"}
+        </button>
+        <div className={`toolbar-actions${actionsOpen ? " open" : ""}`}>
         {p.scheduleId != null && (
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 14 }}>
             Startdatum
@@ -256,12 +281,15 @@ function Body(p: BodyProps) {
             </button>
           </>
         )}
+        </div>
       </div>
 
       {p.scheduleId != null && <ConflictPanel conflicts={conflicts} />}
 
       {p.scheduleId != null && (p.canEdit || p.absences.size > 0) && (
-        <AbsenceEditor roster={p.roster} days={days} absences={p.absences} canEdit={p.canEdit} toggle={p.actions.toggleAbsent} />
+        <div className={actionsOpen || p.absences.size > 0 ? "" : "hide-narrow"}>
+          <AbsenceEditor roster={p.roster} days={days} absences={p.absences} canEdit={p.canEdit} toggle={p.actions.toggleAbsent} />
+        </div>
       )}
 
       <div className="legend">
@@ -288,7 +316,15 @@ function Body(p: BodyProps) {
       )}
 
       {card && p.seasonId != null && (
-        <EvalCard name={card.name} level={card.level} seasonId={p.seasonId} scheduleDays={days} onClose={() => setCard(null)} />
+        <EvalCard
+          name={card.name}
+          level={card.level}
+          seasonId={p.seasonId}
+          scheduleDays={days}
+          rows={p.rows}
+          onOpen={(name, level) => setCard({ name, level })}
+          onClose={closeCard}
+        />
       )}
     </div>
   );

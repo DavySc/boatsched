@@ -1,148 +1,177 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { api, errMsg } from "../api";
-import { DAY_NL_SHORT } from "../i18n";
-import type { DayProgress, Instructor, Member, SkillCatalog, StudentProgress } from "../types";
+import { DAY_NL, DAY_NL_SHORT, DAY_ORDER } from "../i18n";
+import type { DayProgress, Instructor, Member, Row, SkillCatalog, StudentProgress } from "../types";
+import { enqueue, flush, pendingFor, subscribe, syncStatus, type Change } from "./outbox";
 
 const STD_CODES = ["", "attempted", "completed"];
 const OVR_CODES = ["", "O", "T", "V", "G"];
 const GLYPH: Record<string, string> = { attempted: "•", completed: "✓", O: "O", T: "T", V: "V", G: "G" };
-const WEEKDAYS = new Set(["Fri", "Sat", "Sun", "Mon", "Tue", "Wed"]);
-const CODE_LABEL: Record<string, string> = { attempted: "geprobeerd", completed: "behaald" };
+const CODE_LABEL: Record<string, string> = { "": "—", attempted: "Geprobeerd", completed: "Behaald", O: "O", T: "T", V: "V", G: "G" };
+// The days the server accepts evaluations for (see eval_assessment's CHECK).
+const EVAL_DAYS = new Set(DAY_ORDER);
+const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const narrow = () => matchMedia("(max-width: 700px)").matches;
 
 interface Props {
   name: string;
   level: string;
   seasonId: number;
   scheduleDays: string[];
+  /** Schedule rows, for stepping through the kid's boat-mates. */
+  rows: Row[];
+  onOpen: (name: string, level: string) => void;
   onClose: () => void;
 }
 
-interface Loaded {
+interface Shared {
   catalog: SkillCatalog;
   instructors: Instructor[];
-  memberId: number | null;
-  progress: StudentProgress;
+  members: Member[];
 }
 
-export function EvalCard({ name, level, seasonId, scheduleDays, onClose }: Props) {
-  const [data, setData] = useState<Loaded | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
-  const timer = useRef<number | undefined>(undefined);
-  const latest = useRef<Loaded | null>(null);
-  latest.current = data;
+// Catalog, instructors and members rarely change: fetch them once, not per card.
+let shared: Promise<Shared> | null = null;
+const loadShared = () =>
+  (shared ??= Promise.all([
+    api<{ levels: SkillCatalog }>("/api/skills"),
+    api<Instructor[]>("/instructors"),
+    api<Member[]>("/api/members"),
+  ]).then(([cat, instructors, members]) => ({ catalog: cat.levels ?? {}, instructors, members }))).catch((e) => {
+    shared = null;
+    throw e;
+  });
 
-  const days = scheduleDays.length ? scheduleDays.slice(0, 5) : ["Dag 1", "Dag 2", "Dag 3", "Dag 4", "Dag 5"];
+const applyChange = (p: StudentProgress, c: Change) => {
+  if (c.kind === "notes") {
+    p.notes = c.text;
+    return;
+  }
+  const d: DayProgress = (p.days[c.day] ??= { skippers: [], records: {} });
+  if (c.kind === "skippers") d.skippers = c.ids;
+  else if (c.status) d.records[c.skill_id] = c.status;
+  else delete d.records[c.skill_id];
+};
+
+export function EvalCard({ name, level, seasonId, scheduleDays, rows, onOpen, onClose }: Props) {
+  const [base, setBase] = useState<Shared | null>(null);
+  const [progress, setProgress] = useState<StudentProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const sync = useSyncExternalStore(subscribe, () => JSON.stringify(syncStatus()));
+  const { state, pending, lastError } = JSON.parse(sync) as ReturnType<typeof syncStatus>;
+
+  const days = (scheduleDays.length ? scheduleDays : DAY_ORDER).filter((d) => EVAL_DAYS.has(d));
+  const [shown, setShown] = useState<string>(() => {
+    if (!narrow()) return "week";
+    const today = WEEKDAY[new Date().getDay()];
+    return days.includes(today) ? today : days[0];
+  });
+
+  const memberId = base?.members.find((m) => m.name.toLowerCase() === name.toLowerCase())?.id ?? null;
 
   useEffect(() => {
     let cancelled = false;
+    setProgress(null);
+    setError(null);
     (async () => {
       try {
-        const [cat, instructors, members, prog] = await Promise.all([
-          api<{ levels: SkillCatalog }>("/api/skills"),
-          api<Instructor[]>("/instructors"),
-          api<Member[]>("/api/members"),
-          api<{ progressData: (StudentProgress & { name?: string })[] }>(`/api/progress?season_id=${seasonId}`),
-        ]);
+        const s = await loadShared();
         if (cancelled) return;
-        const memberId = members.find((m) => m.name.toLowerCase() === name.toLowerCase())?.id ?? null;
-        const mine = prog.progressData.find((p) => p.name?.toLowerCase() === name.toLowerCase());
-        setData({
-          catalog: cat.levels ?? {},
-          instructors,
-          memberId,
-          progress: { member_id: memberId ?? -1, days: mine?.days ?? {}, notes: mine?.notes ?? "" },
-        });
+        setBase(s);
+        const id = s.members.find((m) => m.name.toLowerCase() === name.toLowerCase())?.id;
+        if (id == null) return setError("Onbekende deelnemer");
+        const prog = await api<{ progressData: StudentProgress[] }>(`/api/progress?season_id=${seasonId}&member_id=${id}`);
+        if (cancelled) return;
+        const mine = prog.progressData[0];
+        const p: StudentProgress = { member_id: id, days: mine?.days ?? {}, notes: mine?.notes ?? "" };
+        // Edits not yet on the server (e.g. made offline) win over what it sent.
+        for (const c of pendingFor(id, seasonId)) applyChange(p, c);
+        setProgress(p);
       } catch (e) {
         if (!cancelled) setError(errMsg(e));
       }
     })();
+    void flush();
     return () => {
       cancelled = true;
     };
   }, [name, seasonId]);
 
-  const save = async (silent: boolean) => {
-    const cur = latest.current;
-    if (!cur) return;
-    if (cur.memberId == null) return setStatus("Onbekende deelnemer");
-    if (!silent) setStatus("Opslaan…");
-    const payload = {
-      member_id: cur.memberId,
-      season_id: seasonId,
-      notes: cur.progress.notes,
-      days: Object.entries(cur.progress.days)
-        .filter(([day]) => WEEKDAYS.has(day))
-        .map(([day, d]) => ({ day, skippers: [...new Set(d.skippers ?? [])], records: d.records ?? {} })),
-    };
-    try {
-      await api("/api/progress", { json: payload });
-      setStatus("Opgeslagen ✓");
-      window.setTimeout(() => setStatus(""), 2000);
-    } catch (e) {
-      setStatus(`Opslaan mislukt: ${errMsg(e)}`);
-    }
-  };
+  // Keep the offline copy of this card current, so reopening it without
+  // signal shows the latest taps, not the state when it was last fetched.
+  // The cache name must match rust/crates/server/static/sw.js.
+  useEffect(() => {
+    if (!progress || !("caches" in window)) return;
+    const url = `/api/progress?season_id=${seasonId}&member_id=${progress.member_id}`;
+    const body = JSON.stringify({ progressData: [progress] });
+    void caches
+      .open("boatsched-v1")
+      .then((c) => c.put(url, new Response(body, { headers: { "Content-Type": "application/json" } })))
+      .catch(() => {});
+  }, [progress, seasonId]);
 
-  const change = (fn: (p: StudentProgress) => void) => {
-    setData((d) => {
-      if (!d) return d;
-      const progress = structuredClone(d.progress);
-      fn(progress);
-      return { ...d, progress };
+  const change = (c: Change) => {
+    if (memberId == null) return;
+    setProgress((p) => {
+      if (!p) return p;
+      const next = structuredClone(p);
+      applyChange(next, c);
+      return next;
     });
-    setStatus("Niet opgeslagen…");
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => void save(true), 1800);
+    enqueue(memberId, seasonId, c);
+    navigator.vibrate?.(8);
   };
 
-  // Flush a pending autosave when the card is closed.
-  const close = () => {
-    if (timer.current) {
-      window.clearTimeout(timer.current);
-      void save(true);
-    }
-    onClose();
+  const setCell = (skillId: number, day: string, status: string) => change({ kind: "cell", day, skill_id: skillId, status });
+  const codeOf = (skillId: number, day: string) => progress?.days[day]?.records[skillId] ?? "";
+
+  const setSkipper = (day: string, pos: 0 | 1, value: string) => {
+    const cur = progress?.days[day]?.skippers ?? [];
+    const ids: (number | undefined)[] = [cur[0], cur[1]];
+    ids[pos] = value === "" ? undefined : Number(value);
+    change({ kind: "skippers", day, ids: [...new Set(ids.filter((x): x is number => x != null))] });
+  };
+
+  // Boat-mates on the shown day (or the first day in week view), for prev/next.
+  const navDay = shown === "week" ? days[0] : shown;
+  const mine = rows.find((r) => r.day === navDay && r.name === name);
+  const crew = mine ? rows.filter((r) => r.day === navDay && r.boat === mine.boat).sort((a, b) => a.name.localeCompare(b.name)) : [];
+  const at = crew.findIndex((r) => r.name === name);
+  const step = (delta: number) => {
+    const r = crew[(at + delta + crew.length) % crew.length];
+    if (r) onOpen(r.name, r.level);
   };
 
   useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && close();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", esc);
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", esc);
       document.body.style.overflow = "";
     };
-  });
+  }, [onClose]);
 
-  const ensureDay = (p: StudentProgress, day: string): DayProgress => (p.days[day] ??= { skippers: [], records: {} });
-
-  const cycle = (skillId: number, day: string, overall: boolean) =>
-    change((p) => {
-      const d = ensureDay(p, day);
-      const codes = overall ? OVR_CODES : STD_CODES;
-      const cur = d.records[skillId] ?? "";
-      const next = codes[(codes.indexOf(cur) + 1) % codes.length];
-      if (next) d.records[skillId] = next;
-      else delete d.records[skillId];
-    });
+  const syncText =
+    state === "sending"
+      ? "Versturen…"
+      : pending === 0
+        ? lastError
+          ? `Niet opgeslagen: ${lastError}`
+          : "Opgeslagen ✓"
+        : state === "offline"
+          ? `Offline · ${pending} ${pending === 1 ? "wijziging wacht" : "wijzigingen wachten"}`
+          : `${pending} niet verstuurd${lastError ? ` · ${lastError}` : ""}`;
 
   const skipperSelect = (day: string, pos: 0 | 1) => (
     <select
       className="skipper-sel"
-      aria-label={`Schipper ${pos + 1} op ${DAY_NL_SHORT[day] ?? day}`}
-      value={data?.progress.days[day]?.skippers?.[pos] ?? ""}
-      onChange={(e) =>
-        change((p) => {
-          const d = ensureDay(p, day);
-          const ids = [d.skippers[0], d.skippers[1]];
-          ids[pos] = e.target.value === "" ? (undefined as unknown as number) : Number(e.target.value);
-          d.skippers = [...new Set(ids.filter((x) => x != null))];
-        })
-      }
+      aria-label={`Schipper ${pos + 1} op ${DAY_NL[day] ?? day}`}
+      value={progress?.days[day]?.skippers?.[pos] ?? ""}
+      onChange={(e) => setSkipper(day, pos, e.target.value)}
     >
-      <option value="">—</option>
-      {data?.instructors.map((i) => (
+      <option value="">{pos === 0 ? "Schipper…" : "2e schipper…"}</option>
+      {base?.instructors.map((i) => (
         <option key={i.id} value={i.id}>
           {i.name}
         </option>
@@ -150,14 +179,18 @@ export function EvalCard({ name, level, seasonId, scheduleDays, onClose }: Props
     </select>
   );
 
-  const cell = (skillId: number, day: string, overall: boolean) => {
-    const code = data?.progress.days[day]?.records[skillId] ?? "";
+  const catalog = base?.catalog[level] ?? [];
+
+  // Week grid: tap a cell to cycle through the states.
+  const weekCell = (skillId: number, day: string, overall: boolean) => {
+    const code = codeOf(skillId, day);
+    const codes = overall ? OVR_CODES : STD_CODES;
     return (
       <td key={day} className={code ? `state-${code}` : ""}>
         <button
           className="cell-btn"
-          aria-label={`${DAY_NL_SHORT[day] ?? day}: ${CODE_LABEL[code] ?? (code || "leeg")}`}
-          onClick={() => cycle(skillId, day, overall)}
+          aria-label={`${DAY_NL[day] ?? day}: ${code ? CODE_LABEL[code] : "leeg"}`}
+          onClick={() => setCell(skillId, day, codes[(codes.indexOf(code) + 1) % codes.length])}
         >
           {GLYPH[code] ?? <span style={{ opacity: 0.22 }}>·</span>}
         </button>
@@ -165,77 +198,124 @@ export function EvalCard({ name, level, seasonId, scheduleDays, onClose }: Props
     );
   };
 
+  const week = (
+    <div className="eval-table-outer">
+      <table className="eval-table">
+        <thead>
+          <tr>
+            <th className="skill-col">Vaardigheid</th>
+            {days.map((d) => (
+              <th key={d}>{DAY_NL_SHORT[d] ?? d}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className="skill-label" style={{ fontStyle: "italic", fontWeight: 400 }}>
+              Schipper
+            </td>
+            {days.map((d) => (
+              <td key={d} style={{ padding: "4px 6px" }}>
+                {skipperSelect(d, 0)}
+                {skipperSelect(d, 1)}
+              </td>
+            ))}
+          </tr>
+          {catalog.flatMap((cat) => [
+            <tr key={`c-${cat.category}`}>
+              <td className="cat-hdr" colSpan={days.length + 1}>
+                {cat.category}
+              </td>
+            </tr>,
+            ...cat.skills.flatMap((s) => [
+              <tr key={`s-${s.id}`}>
+                <td className="skill-label">{s.label}</td>
+                {days.map((d) => weekCell(s.id, d, cat.eval_type === "overall"))}
+              </tr>,
+              ...(s.subskills ?? []).map((sub) => (
+                <tr key={`ss-${sub.id}`}>
+                  <td className="skill-label sub">{sub.label}</td>
+                  {days.map((d) => weekCell(sub.id, d, cat.eval_type === "overall"))}
+                </tr>
+              )),
+            ]),
+          ])}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  // One day: every skill gets explicit choices, so a single tap sets the value
+  // instead of cycling past it.
+  const choice = (skillId: number, label: string, sub: boolean, overall: boolean) => {
+    const code = codeOf(skillId, shown);
+    return (
+      <li key={skillId} className={`skill-row${sub ? " sub" : ""}`}>
+        <span className="skill-name">{label}</span>
+        <span className="choice" role="group" aria-label={label}>
+          {(overall ? OVR_CODES : STD_CODES).slice(1).map((c) => (
+            <button
+              key={c}
+              className={`state-${c}`}
+              aria-pressed={code === c}
+              onClick={() => setCell(skillId, shown, code === c ? "" : c)}
+            >
+              {CODE_LABEL[c]}
+            </button>
+          ))}
+        </span>
+      </li>
+    );
+  };
+
+  const day = (
+    <div className="eval-day">
+      <div className="eval-skippers">
+        {skipperSelect(shown, 0)}
+        {skipperSelect(shown, 1)}
+      </div>
+      {catalog.map((cat) => (
+        <section key={cat.category} className="skill-group">
+          <h4>{cat.category}</h4>
+          <ul>
+            {cat.skills.flatMap((s) => [
+              choice(s.id, s.label, false, cat.eval_type === "overall"),
+              ...(s.subskills ?? []).map((sub) => choice(sub.id, sub.label, true, cat.eval_type === "overall")),
+            ])}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+
   return (
     <div className="eval-overlay" role="dialog" aria-modal="true" aria-label={`Beoordelingskaart ${name}`}>
       <div className="eval-wrap">
         <div className="eval-hdr-bar">
-          <button className="btn-sm" onClick={close} autoFocus>
+          <button className="btn-sm" onClick={onClose} autoFocus>
             ← Terug
           </button>
-          <span className={`lv lv-${level}`} style={{ width: "auto", padding: "0 10px", height: 28 }}>
-            {level}
-          </span>
+          <span className={`lv lv-${level}`}>{level}</span>
           <span className="eval-name">{name}</span>
-          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-            <span className="eval-save-status" role="status">
-              {status}
-            </span>
-            <button className="btn-sm" onClick={() => void save(false)}>
-              Opslaan
-            </button>
+          <span className={`eval-save-status${pending ? " pending" : ""}`} role="status">
+            {syncText}
           </span>
         </div>
+        <div className="eval-days seg" role="group" aria-label="Dag">
+          {days.map((d) => (
+            <button key={d} aria-pressed={shown === d} aria-label={DAY_NL[d] ?? d} onClick={() => setShown(d)}>
+              {DAY_NL_SHORT[d] ?? d}
+            </button>
+          ))}
+          <button aria-pressed={shown === "week"} onClick={() => setShown("week")}>
+            Week
+          </button>
+        </div>
         {error && <p className="err">⚠ {error}</p>}
-        {!data && !error && <p className="center-note">Laden…</p>}
-        {data && (
+        {!progress && !error && <p className="center-note">Laden…</p>}
+        {progress && (
           <>
-            <div className="eval-table-outer">
-              <table className="eval-table">
-                <thead>
-                  <tr>
-                    <th className="skill-col">Vaardigheid</th>
-                    {days.map((d, i) => (
-                      <th key={d}>
-                        {DAY_NL_SHORT[d] ?? d}
-                        <span style={{ display: "block", fontSize: 9, fontWeight: 400, opacity: 0.6 }}>DAG {i + 1}</span>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td className="skill-label" style={{ fontStyle: "italic", fontWeight: 400 }}>
-                      Schipper
-                    </td>
-                    {days.map((d) => (
-                      <td key={d} style={{ padding: "4px 6px" }}>
-                        {skipperSelect(d, 0)}
-                        {skipperSelect(d, 1)}
-                      </td>
-                    ))}
-                  </tr>
-                  {(data.catalog[level] ?? []).flatMap((cat) => [
-                    <tr key={`c-${cat.category}`}>
-                      <td className="cat-hdr" colSpan={days.length + 1}>
-                        {cat.category}
-                      </td>
-                    </tr>,
-                    ...cat.skills.flatMap((s) => [
-                      <tr key={`s-${s.id}`}>
-                        <td className="skill-label">{s.label}</td>
-                        {days.map((d) => cell(s.id, d, cat.eval_type === "overall"))}
-                      </tr>,
-                      ...(s.subskills ?? []).map((sub) => (
-                        <tr key={`ss-${sub.id}`}>
-                          <td className="skill-label sub">{sub.label}</td>
-                          {days.map((d) => cell(sub.id, d, cat.eval_type === "overall"))}
-                        </tr>
-                      )),
-                    ]),
-                  ])}
-                </tbody>
-              </table>
-            </div>
+            {shown === "week" ? week : day}
             <div className="eval-notes-section">
               <label className="login-label" htmlFor="eval-notes">
                 Notities
@@ -244,11 +324,24 @@ export function EvalCard({ name, level, seasonId, scheduleDays, onClose }: Props
                 id="eval-notes"
                 className="eval-notes"
                 placeholder="Vrije notities voor deze deelnemer…"
-                value={data.progress.notes}
-                onChange={(e) => change((p) => void (p.notes = e.target.value))}
+                value={progress.notes}
+                onChange={(e) => change({ kind: "notes", text: e.target.value })}
               />
             </div>
           </>
+        )}
+        {crew.length > 1 && (
+          <nav className="eval-nav" aria-label="Andere bemanning">
+            <button className="btn-sm" onClick={() => step(-1)}>
+              ‹ {crew[(at - 1 + crew.length) % crew.length].name}
+            </button>
+            <span className="eval-nav-pos">
+              Boot {mine?.boat} · {at + 1}/{crew.length}
+            </span>
+            <button className="btn-sm" onClick={() => step(1)}>
+              {crew[(at + 1) % crew.length].name} ›
+            </button>
+          </nav>
         )}
       </div>
     </div>

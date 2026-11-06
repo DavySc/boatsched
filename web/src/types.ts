@@ -35,8 +35,10 @@ export interface Stats {
   mixed: number;
   distinct: number;
   repeats: number;
+  max_meets?: number;
   status_A?: string;
   status_B?: string;
+  status_max?: string;
   status_C?: string;
 }
 

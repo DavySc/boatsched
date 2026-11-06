@@ -233,56 +233,12 @@ const WEEKDAYS: [&str; 6] = ["Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
 /// student's enrolled level and each status is legal for that skill's category
 /// `eval_type`.
 pub fn save_student_progress(conn: &Connection, p: &SaveProgress) -> Result<()> {
-    if !is_student(conn, p.member_id, p.season_id)? {
-        return Err(DbError::Invalid(
-            "geen ingeschreven deelnemer voor dit seizoen".into(),
-        ));
-    }
-    let level: String = conn.query_row(
-        "SELECT level FROM enrollment WHERE member_id = ?1 AND season_id = ?2",
-        params![p.member_id, p.season_id],
-        |r| r.get(0),
-    )?;
-
-    // skill_id → eval_type for the student's level (top-level skills + sub-skills).
-    let mut skstmt = conn.prepare(
-        "SELECT s.id, c.eval_type FROM eval_skill s \
-         JOIN eval_skill_category c ON c.id = s.category_id \
-         WHERE c.level = ?1 AND s.retired = 0",
-    )?;
-    let level_skills: HashMap<i64, String> = skstmt
-        .query_map(params![level], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    let (level, level_skills) = student_skills(conn, p.member_id, p.season_id)?;
 
     // Validate every day before writing anything.
     for d in &p.days {
-        if !WEEKDAYS.contains(&d.day.as_str()) {
-            return Err(DbError::Invalid(format!("ongeldige dag: {}", d.day)));
-        }
-        if d.skippers.len() > 2 {
-            return Err(DbError::Invalid("maximaal twee schippers per dag".into()));
-        }
-        let mut seen = HashSet::new();
-        for &iid in &d.skippers {
-            if !seen.insert(iid) {
-                return Err(DbError::Invalid("dubbele schipper".into()));
-            }
-            let is_instr = conn
-                .query_row(
-                    "SELECT 1 FROM instructor WHERE member_id = ?1",
-                    params![iid],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if !is_instr {
-                return Err(DbError::Invalid(format!(
-                    "schipper {iid} is geen instructeur"
-                )));
-            }
-        }
+        check_day(&d.day)?;
+        check_skippers(conn, &d.skippers)?;
         for (sid_str, status) in &d.records {
             if status.is_empty() {
                 continue;
@@ -290,14 +246,7 @@ pub fn save_student_progress(conn: &Connection, p: &SaveProgress) -> Result<()> 
             let sid: i64 = sid_str
                 .parse()
                 .map_err(|_| DbError::Invalid(format!("ongeldige skill id: {sid_str}")))?;
-            let eval_type = level_skills.get(&sid).ok_or_else(|| {
-                DbError::Invalid(format!("skill {sid} hoort niet bij niveau {level}"))
-            })?;
-            if !allowed_statuses(eval_type).contains(&status.as_str()) {
-                return Err(DbError::Invalid(format!(
-                    "ongeldige status '{status}' voor skill {sid}"
-                )));
-            }
+            check_status(&level, &level_skills, sid, status)?;
         }
     }
 
@@ -344,6 +293,204 @@ pub fn save_student_progress(conn: &Connection, p: &SaveProgress) -> Result<()> 
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![p.member_id, p.season_id, sid, d.day, status],
             )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// The student's enrolled level and its live `skill_id → eval_type` map
+/// (top-level skills + sub-skills). Errors if the member is not an enrolled
+/// non-instructor student for the season.
+fn student_skills(
+    conn: &Connection,
+    member_id: i64,
+    season_id: i64,
+) -> Result<(String, HashMap<i64, String>)> {
+    if !is_student(conn, member_id, season_id)? {
+        return Err(DbError::Invalid(
+            "geen ingeschreven deelnemer voor dit seizoen".into(),
+        ));
+    }
+    let level: String = conn.query_row(
+        "SELECT level FROM enrollment WHERE member_id = ?1 AND season_id = ?2",
+        params![member_id, season_id],
+        |r| r.get(0),
+    )?;
+    let mut skstmt = conn.prepare(
+        "SELECT s.id, c.eval_type FROM eval_skill s \
+         JOIN eval_skill_category c ON c.id = s.category_id \
+         WHERE c.level = ?1 AND s.retired = 0",
+    )?;
+    let level_skills = skstmt
+        .query_map(params![level], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    Ok((level, level_skills))
+}
+
+fn check_day(day: &str) -> Result<()> {
+    if WEEKDAYS.contains(&day) {
+        Ok(())
+    } else {
+        Err(DbError::Invalid(format!("ongeldige dag: {day}")))
+    }
+}
+
+/// At most two distinct skippers, each an instructor.
+fn check_skippers(conn: &Connection, ids: &[i64]) -> Result<()> {
+    if ids.len() > 2 {
+        return Err(DbError::Invalid("maximaal twee schippers per dag".into()));
+    }
+    let mut seen = HashSet::new();
+    for &iid in ids {
+        if !seen.insert(iid) {
+            return Err(DbError::Invalid("dubbele schipper".into()));
+        }
+        let is_instr = conn
+            .query_row(
+                "SELECT 1 FROM instructor WHERE member_id = ?1",
+                params![iid],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !is_instr {
+            return Err(DbError::Invalid(format!(
+                "schipper {iid} is geen instructeur"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn check_status(
+    level: &str,
+    level_skills: &HashMap<i64, String>,
+    sid: i64,
+    status: &str,
+) -> Result<()> {
+    let eval_type = level_skills
+        .get(&sid)
+        .ok_or_else(|| DbError::Invalid(format!("skill {sid} hoort niet bij niveau {level}")))?;
+    if !allowed_statuses(eval_type).contains(&status) {
+        return Err(DbError::Invalid(format!(
+            "ongeldige status '{status}' voor skill {sid}"
+        )));
+    }
+    Ok(())
+}
+
+/// One edit to a student's eval card. Each touches exactly one cell, one
+/// day's skippers, or the notes, so edits from several phones (possibly
+/// replayed after being offline) merge instead of overwriting each other.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProgressChange {
+    /// `status` empty clears the cell.
+    Cell {
+        day: String,
+        skill_id: i64,
+        status: String,
+    },
+    Skippers {
+        day: String,
+        ids: Vec<i64>,
+    },
+    Notes {
+        text: String,
+    },
+}
+
+/// The payload for `POST /api/progress/changes`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ProgressChanges {
+    pub member_id: i64,
+    pub season_id: i64,
+    pub changes: Vec<ProgressChange>,
+}
+
+/// Validate all changes, then apply them in order in one transaction.
+/// Same validation rules as [`save_student_progress`].
+pub fn apply_progress_changes(conn: &Connection, p: &ProgressChanges) -> Result<()> {
+    let (level, level_skills) = student_skills(conn, p.member_id, p.season_id)?;
+    for c in &p.changes {
+        match c {
+            ProgressChange::Cell {
+                day,
+                skill_id,
+                status,
+            } => {
+                check_day(day)?;
+                if !status.is_empty() {
+                    check_status(&level, &level_skills, *skill_id, status)?;
+                }
+            }
+            ProgressChange::Skippers { day, ids } => {
+                check_day(day)?;
+                check_skippers(conn, ids)?;
+            }
+            ProgressChange::Notes { .. } => {}
+        }
+    }
+
+    let (m, s) = (p.member_id, p.season_id);
+    let tx = conn.unchecked_transaction()?;
+    for c in &p.changes {
+        match c {
+            ProgressChange::Cell {
+                day,
+                skill_id,
+                status,
+            } if status.is_empty() => {
+                tx.execute(
+                    "DELETE FROM eval_assessment \
+                     WHERE member_id = ?1 AND season_id = ?2 AND skill_id = ?3 AND day = ?4",
+                    params![m, s, skill_id, day],
+                )?;
+            }
+            ProgressChange::Cell {
+                day,
+                skill_id,
+                status,
+            } => {
+                tx.execute(
+                    "INSERT INTO eval_assessment (member_id, season_id, skill_id, day, status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(member_id, season_id, skill_id, day) \
+                     DO UPDATE SET status = excluded.status",
+                    params![m, s, skill_id, day, status],
+                )?;
+            }
+            ProgressChange::Skippers { day, ids } => {
+                tx.execute(
+                    "DELETE FROM eval_skipper WHERE member_id = ?1 AND season_id = ?2 AND day = ?3",
+                    params![m, s, day],
+                )?;
+                for (pos, iid) in ids.iter().enumerate() {
+                    tx.execute(
+                        "INSERT INTO eval_skipper (member_id, season_id, day, position, instructor_id) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![m, s, day, (pos as i64) + 1, iid],
+                    )?;
+                }
+            }
+            ProgressChange::Notes { text } => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    tx.execute(
+                        "DELETE FROM eval_note WHERE member_id = ?1 AND season_id = ?2",
+                        params![m, s],
+                    )?;
+                } else {
+                    tx.execute(
+                        "INSERT INTO eval_note (member_id, season_id, note) VALUES (?1, ?2, ?3) \
+                         ON CONFLICT(member_id, season_id) DO UPDATE SET note = excluded.note",
+                        params![m, s, trimmed],
+                    )?;
+                }
+            }
         }
     }
     tx.commit()?;

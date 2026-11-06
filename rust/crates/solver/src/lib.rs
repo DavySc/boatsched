@@ -43,8 +43,11 @@ pub struct Stats {
     pub mixed: i64,
     pub distinct: i64,
     pub repeats: i64,
+    /// Most days any one pair shares a boat (minimised before `repeats`).
+    pub max_meets: i64,
     pub status_a: String,
     pub status_b: String,
+    pub status_max: String,
     pub status_c: String,
 }
 
@@ -98,8 +101,8 @@ fn is_ok(code: i32) -> bool {
     code == 2 || code == 4 // FEASIBLE | OPTIMAL
 }
 
-/// The three stage labels, identical to the Python `on_progress` labels.
-const STAGE_LABELS: [&str; 3] = ["A mixed", "B diversity", "C repeats"];
+/// Stage labels passed to `on_progress`, in solve order.
+const STAGE_LABELS: [&str; 4] = ["A mixed", "B diversity", "C max meets", "C repeats"];
 
 /// Build + staged-solve + extract. Returns `(rows, stats)`. `on_progress`
 /// receives `(label, status_name, value)` after each successful stage, exactly
@@ -196,8 +199,8 @@ pub fn solve_with(
     let constrained = !constraints.absences.is_empty() || !constraints.locked.is_empty();
 
     let mut assign = vec![-1i32; n * d];
-    let mut status = [-1i32; 3];
-    let mut vals = [0i64; 3];
+    let mut status = [-1i32; 4];
+    let mut vals = [0i64; 4];
     let mut err = vec![0 as c_char; 256];
 
     let rc = unsafe {
@@ -235,10 +238,14 @@ pub fn solve_with(
         return Err(SolveFailure::Solve(SolveError(msg)));
     }
 
-    // Emit progress for successful stages in order; raise on the first failure.
-    for i in 0..3 {
+    // Emit progress for successful stages in order. A or B failing is fatal; a
+    // repeat stage failing keeps the earlier stage's schedule.
+    for i in 0..4 {
         if status[i] < 0 {
             // Not run: only happens after an earlier failure, already handled.
+            break;
+        }
+        if !is_ok(status[i]) && i >= 2 {
             break;
         }
         if !is_ok(status[i]) {
@@ -270,13 +277,35 @@ pub fn solve_with(
         }
     }
 
+    // Measured on the returned schedule, which may come from an earlier stage.
+    let (repeats, max_meets) = pair_stats(&assign, n, d);
     let stats = Stats {
         mixed: vals[0],
         distinct: vals[1],
-        repeats: vals[2],
+        repeats,
+        max_meets,
         status_a: status_name(status[0]).to_string(),
         status_b: status_name(status[1]).to_string(),
-        status_c: status_name(status[2]).to_string(),
+        status_max: status_name(status[2]).to_string(),
+        status_c: status_name(status[3]).to_string(),
     };
     Ok((rows, stats))
+}
+
+/// `(total repeats, most days any pair shares a boat)` of an assignment laid
+/// out `kid * n_days + day` → boat (-1 = absent).
+fn pair_stats(assign: &[i32], n: usize, d: usize) -> (i64, i64) {
+    let (mut repeats, mut max_meets) = (0i64, 0i64);
+    for k1 in 0..n {
+        for k2 in (k1 + 1)..n {
+            let meets = (0..d)
+                .filter(|&di| {
+                    assign[k1 * d + di] >= 0 && assign[k1 * d + di] == assign[k2 * d + di]
+                })
+                .count() as i64;
+            repeats += (meets - 1).max(0);
+            max_meets = max_meets.max(meets);
+        }
+    }
+    (repeats, max_meets)
 }

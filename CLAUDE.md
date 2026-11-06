@@ -156,6 +156,11 @@ cd spec && lake build
 > enforced by the table CHECK and tied to the solver ordering) — not free text.
 
 > Skill-result persistence is served by `GET`/`POST /api/progress` and `/api/skills`.
+> The SPA writes through `POST /api/progress/changes` (per-cell / per-day-skippers /
+> notes edits, so phones don't overwrite each other) from a localStorage outbox
+> (`web/src/eval/outbox.ts`) that survives being offline and re-login.
+> `GET /sw.js`, `/manifest.webmanifest` and `/icon.svg` (public, from
+> `crates/server/static/`) make the SPA installable and usable offline.
 
 ### DB schema
 
@@ -205,7 +210,7 @@ legacy DB.
 |---|---|---|
 | A | Minimise mixed-level boats | `restricted` (Sat/Sun/Tue/Wed by default) |
 | B | Maximise distinct levels per boat | `diverse` (Fri/Mon by default) |
-| C | Minimise repeat co-boatings (Social-Golfer) | all days |
+| C | Minimise the most days any one pair shares a boat, then the total repeat co-boatings (Social-Golfer) | all days |
 
 With absences or locks, per-level boat prefixing is disabled and each boat holds floor/ceil(present/boats) kids that day. The roster size must still divide evenly by `boats` (`validate`).
 
@@ -250,7 +255,7 @@ responses, security headers in middleware, and a `min_password_len` of 8. The
 ### Solver output
 
 The solver returns the assignment rows `(day, boat, name, level)` plus stats
-`{mixed, distinct, repeats, status_A, status_B, status_C}` (matching the lexicographic stages
+`{mixed, distinct, repeats, max_meets, status_A, status_B, status_max, status_C}` (matching the lexicographic stages
 below). A progress callback streams per-stage results for the live UI.
 
 ### Error categories

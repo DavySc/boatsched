@@ -171,13 +171,16 @@ fn status_c_is_optimal_or_feasible() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn on_progress_called_three_times_with_labels() {
+fn on_progress_called_per_stage_with_labels() {
     let mut labels: Vec<String> = Vec::new();
     {
         let mut cb = |l: &str, _s: &str, _v: i64| labels.push(l.to_string());
         solve(&kids(), &cfg(), Some(&mut cb)).unwrap();
     }
-    assert_eq!(labels, svec(&["A mixed", "B diversity", "C repeats"]));
+    assert_eq!(
+        labels,
+        svec(&["A mixed", "B diversity", "C max meets", "C repeats"])
+    );
 }
 
 #[test]
@@ -187,7 +190,7 @@ fn on_progress_values_nonneg() {
         let mut cb = |_l: &str, _s: &str, v: i64| vals.push(v);
         solve(&kids(), &cfg(), Some(&mut cb)).unwrap();
     }
-    assert_eq!(vals.len(), 3);
+    assert_eq!(vals.len(), 4);
     assert!(vals.iter().all(|&v| v >= 0));
 }
 
@@ -198,7 +201,7 @@ fn on_progress_statuses_are_known() {
         let mut cb = |_l: &str, s: &str, _v: i64| statuses.push(s.to_string());
         solve(&kids(), &cfg(), Some(&mut cb)).unwrap();
     }
-    assert_eq!(statuses.len(), 3);
+    assert_eq!(statuses.len(), 4);
     assert!(statuses
         .iter()
         .all(|s| matches!(s.as_str(), "OPTIMAL" | "FEASIBLE")));
@@ -351,6 +354,7 @@ fn golden_mid_16_objectives_match_python() {
     assert_eq!(stats.mixed, 0);
     assert_eq!(stats.distinct, 32);
     assert_eq!(stats.repeats, 72);
+    assert_eq!(stats.max_meets, 4);
     assert_eq!(stats.status_c, "OPTIMAL");
 }
 

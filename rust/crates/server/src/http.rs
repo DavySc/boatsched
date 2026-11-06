@@ -172,9 +172,12 @@ pub(crate) fn ctype_str(headers: &HeaderMap) -> String {
 // defence-in-depth headers.
 // ---------------------------------------------------------------------------
 
-pub(crate) const PUBLIC_PATHS: [&str; 5] = [
+pub(crate) const PUBLIC_PATHS: [&str; 8] = [
     "/",
     "/index.html",
+    "/sw.js",
+    "/manifest.webmanifest",
+    "/icon.svg",
     "/api/auth/login",
     "/api/auth/logout",
     "/api/health",
