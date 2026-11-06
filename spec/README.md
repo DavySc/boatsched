@@ -22,7 +22,7 @@ implement the same logic and are bound to Lean by **oracle vectors**:
 `rust/crates/core/tests/conformance.rs` embeds + reproduces them against the Rust
 `validate`. The link is *testing*, but the thing being tested against is
 *proven correct*. The vectors deliberately live under `rust/` (not here) so they
-sit inside the Docker build context — the image build's `cargo test` gate runs
+sit inside the Nix package's source — the package build's `cargo test` gate runs
 the conformance check too.
 
 ```bash

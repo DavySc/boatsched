@@ -1,272 +1,150 @@
-# Deployment — boatsched (Rust) on a Hetzner box
+# Deployment — boatsched on a Hetzner box, built with Nix
 
-CI/CD: on every PR and every push to `main`, GitHub Actions runs the **`test` job** (`cargo test` over the workspace). On a
-push to `main`, the **`deploy` job** then runs (`deploy: needs: test`, so only if
-tests pass): it SSHes to the box and runs `deploy/deploy.sh`, which **builds the
-image on the box** (`BUILD_ON_HOST=1`) and does the never-break-prod cutover. The
-on-box build runs `cargo test` again, so the gate is enforced twice (CI + at
-deploy time). The app runs as a **single Docker container** (managed by
-`boatsched-docker.service`), bound to `127.0.0.1:8000`, behind nginx + certbot
-(TLS terminated by nginx).
+The box keeps its distro. Nix builds the server, CI copies it into the box's
+Nix store, and a plain systemd unit runs it behind nginx + certbot. There is no
+Docker and no build on the box.
 
-> **Why build on the box (no registry):** CI only orchestrates the SSH; the box
-> builds. This drops the registry entirely (no `REGISTRY_*` secrets, no
-> `docker login`), and the cutover/rollback logic relies on the image being local.
-
-> **The cutover never breaks prod.** Every deploy backs up the DB, validates the
-> new image against a *copy* of the production database on a side port, and only
-> then does a single-writer handover — with **automatic rollback** if the new
-> service doesn't pass its health check. See [Deploy flow](#deploy-flow-automatic).
-
----
-
-## Why Docker (and why the host OS no longer matters)
-
-The Rust solver links OR-Tools' C++ libraries (`libortools.so` + ~100 bundled
-abseil/protobuf/CBC/SCIP/HiGHS libs). Those are ABI-sensitive to glibc/libstdc++.
-Containerizing bakes a matching, version-pinned OR-Tools SDK
-(**9.15.6755**, `ubuntu-24.04` build) into the image alongside the binary, so the
-image is self-contained. **The host only needs Docker** — its distro/version is
-irrelevant.
-
-- Build context: `rust/` (`rust/Dockerfile`, multi-stage; builder + runtime both
-  `ubuntu:24.04` so the build-time ABI is exactly the run-time ABI).
-- The OR-Tools SDK is fetched fresh during the build (gitignored, never vendored
-  into git). `crates/solver/build.rs` bakes an rpath to `/opt/or-tools/lib`; the
-  runtime stage keeps the libs at that exact path.
-
----
-
-## Architecture at a glance
-
-```
-Internet ──HTTPS──▶ nginx (:443, TLS via certbot)
-                      │  proxy_pass + WS upgrade   (deploy/nginx.conf — unchanged)
-                      ▼
-              boatsched container (127.0.0.1:8000)   ← single container (see below)
-                      │  bind mount
-              SQLite WAL @ /var/lib/boatsched/boatsched.db   (host path, reused as-is)
-```
-
-**Single container — do not scale.** All collab/session/job state lives in the
-container's memory (sessions, solve `JOBS`, per-schedule `yrs` docs + the live
-WebSockets used to broadcast edits). A second container/replica would not share
-them, breaking collaborative editing and sessions. Vertical scaling (bigger box)
-is the path, not replicas.
-
-**Data is reused in place.** The container bind-mounts the existing
-`/var/lib/boatsched` directory; the Rust DB layer creates tables with
-`CREATE TABLE IF NOT EXISTS` and runs the same idempotent migrations,
-in WAL mode, with byte-compatible scrypt password hashes. **No data migration,
-no schema change, no forced re-login of stored credentials.**
-
----
-
-## CI secrets (GitHub repo → Settings → Secrets and variables → Actions)
-
-Only SSH is needed (no registry — the box builds):
-
-| Secret | Contents |
+| file | what it is |
 |---|---|
-| `SSH_PRIVATE_KEY` | Private half of the deploy keypair (full PEM). |
-| `SSH_HOST` | Box hostname or public IP. |
-| `SSH_USER` | `deploy` |
-| `SSH_KNOWN_HOSTS` | Pinned host key line(s) from `ssh-keyscan`. |
+| `flake.nix` / `flake.lock` | pins nixpkgs (26.05); exposes `boatsched`, `boatsched-switch` and a dev shell |
+| `nix/web.nix`, `nix/package.nix` | the SPA and the server; the server build runs `cargo test --workspace` |
+| `nix/switch.sh` | `boatsched-switch`, the gated cutover that runs on the box |
+| `deploy/deploy.sh` | build → `nix copy` to the box → run `boatsched-switch` |
+| `deploy/boatsched.service` | systemd unit; runs the server from a Nix profile |
+| `deploy/nginx.conf` | nginx site (hand-installed, see below) |
 
----
-
-## CI runner notes
-
-`.github/workflows/deploy.yml` has three jobs (`test`, `verify-spec`, `deploy`), on
-GitHub-hosted `ubuntu-24.04` runners:
-
-- **`test`** — runs on every PR and every push to `main`. In an `ubuntu:24.04`
-  container (matching the OR-Tools ubuntu-24.04 SDK ABI, like `rust/Dockerfile`),
-  it installs the pinned Rust toolchain, fetches the OR-Tools SDK, and runs
-  `cargo test --workspace --locked`. Every step is shell-only (no JS actions), so
-  the container needs no Node — it clones the repo manually.
-- **`deploy`** — runs only on a push to `main` and only if `test` passed
-  (`needs: test`). It SSHes to the box and runs `deploy/deploy.sh`; it does **not**
-  build or push an image. The box builds it (`BUILD_ON_HOST=1` in
-  `/etc/boatsched/env`), and that on-box build runs `cargo test` again — so the
-  gate holds even if you deploy by hand.
-
-Building on the box compiles during the deploy (CPU/RAM contention for a few minutes) but does
-**not** disturb the running service — the new image is only swapped in after it
-validates on `:8001`.
-
-> **Fully manual** (no CI at all) also works: `sudo -u deploy bash
-> /opt/boatsched/deploy/deploy.sh` on the box.
-
----
-
-## One-time server provisioning (clean box)
-
-Provisioning a fresh host for the container. Run as root (or via `sudo`).
-
-### 1. Install Docker + helpers
-
-```bash
-apt update
-apt install -y docker.io git nginx sqlite3 curl
-systemctl enable --now docker
+```
+Internet ──HTTPS──▶ nginx (:443, TLS via certbot)        deploy/nginx.conf
+                      │  proxy_pass + /collab/ WebSocket upgrade
+                      ▼
+              boatsched.service (127.0.0.1:8000, user deploy)   ← single process
+                      │  ExecStart = /nix/var/nix/profiles/per-user/deploy/boatsched/bin/boatsched-server
+              SQLite WAL @ /var/lib/boatsched/boatsched.db
+              backups   @ /var/lib/boatsched/backups/ (one per deploy, last 20 kept)
 ```
 
-The scripts use Compose **v2** (`docker compose`, with a space). The
-`docker-compose-plugin` package only exists in Docker's own apt repo, **not** with
-the distro's `docker.io`. Install the v2 plugin one of these ways:
+The server links nixpkgs' source-built OR-Tools 9.15, and every library it
+needs comes with it from the Nix store, so the host's glibc/libstdc++ don't
+matter.
 
-```bash
-# A) distro package (Ubuntu 24.04 / Debian 13+):
-apt install -y docker-compose-v2
-
-# B) distro-agnostic — drop the plugin binary in (works alongside docker.io):
-mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
-  -o /usr/local/lib/docker/cli-plugins/docker-compose
-chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
-docker compose version   # must report v2.x
-```
-
-### 2. Create the `deploy` user (in the `docker` group)
-
-```bash
-useradd --create-home --shell /bin/bash deploy
-usermod -aG docker deploy
-```
-
-### 3. Clone the repo to the deploy path
-
-```bash
-install -d -o deploy -g deploy /opt/boatsched
-sudo -u deploy git clone https://github.com/DavySc/boatsched.git /opt/boatsched
-```
-
-### 4. (Registry login — not needed)
-
-The box **builds** the image (`BUILD_ON_HOST=1`, see step 6), so there is no
-registry pull and no `docker login`. Skip this. (Only needed if you switch to a
-registry-based build on a self-hosted CI runner.)
-
-### 5. DB directory (local NVMe, owned by deploy)
-
-```bash
-install -d -o deploy -g deploy /var/lib/boatsched
-install -d -o deploy -g deploy /var/lib/boatsched-validate   # validation copy
-```
-
-An existing `/var/lib/boatsched/boatsched.db` (+ `-wal`/`-shm`) is reused
-unchanged across deploys.
-
-### 6. Env file `/etc/boatsched/env`
-
-Same file as before — admin bootstrap + solver workers. `docker-compose.yml`
-passes it via `env_file`.
-
-```bash
-install -d -o root -g root -m 755 /etc/boatsched
-cat > /etc/boatsched/env <<'EOF'
-# Bootstrap admin — seeded on first start (idempotent; UI password changes persist).
-BOATSCHED_ADMIN=yourname
-BOATSCHED_ADMIN_PW=use-a-long-random-password
-
-# CP-SAT search workers (forwarded into --workers by the container entrypoint).
-SOLVER_WORKERS=2
-
-# Build the image ON THE BOX during deploy.
-BUILD_ON_HOST=1
-
-# require_auth + secure_cookies auto-enable because the server runs with --db.
-EOF
-chown root:deploy /etc/boatsched/env
-chmod 640 /etc/boatsched/env
-```
-
-### 7. Install the systemd unit
-
-```bash
-cp /opt/boatsched/deploy/boatsched-docker.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now boatsched-docker
-systemctl status boatsched-docker
-```
-
-### 8. Scoped sudoers for the deploy user
-
-`deploy.sh` starts/stops/restarts the container service (handover + rollback).
-Grant exactly those.
-
-```bash
-cat > /etc/sudoers.d/boatsched-deploy <<'EOF'
-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start boatsched-docker, \
-                            /usr/bin/systemctl stop boatsched-docker, \
-                            /usr/bin/systemctl restart boatsched-docker
-EOF
-chmod 440 /etc/sudoers.d/boatsched-deploy
-visudo -cf /etc/sudoers.d/boatsched-deploy
-```
-
-> Confirm the `systemctl` path (`command -v systemctl`). The paths in the sudoers
-> line must be exact.
-
-### 9. Deploy key + host key
-
-Unchanged from before: authorize the CI deploy public key in the `deploy` user's
-`~/.ssh/authorized_keys`, and pin the box's host key into `SSH_KNOWN_HOSTS` via
-`ssh-keyscan`.
-
----
-
-## nginx + TLS
-
-`deploy/nginx.conf`: the app listens on `127.0.0.1:8000`, with the `/collab/`
-WebSocket upgrade and the `X-Real-IP` header the app reads for login
-rate-limiting. nginx is the only public listener and terminates TLS.
+**Single process — do not scale.** Sessions, solve jobs and per-schedule `yrs`
+docs live in the server's memory. Vertical scaling (bigger box) is the path.
 
 ---
 
 ## Deploy flow (automatic)
 
-1. Push to `main` on GitHub.
-2. **test** job: `cargo test --workspace`. The
-   deploy is gated on this (`deploy: needs: test`) — a red test means no deploy.
-3. **deploy** job: SSHes as `deploy` and runs
-   `deploy/deploy.sh`, which:
-   - `git pull --ff-only` (compose/unit/script updates),
-   - backs up the live DB (`sqlite3 .backup`),
-   - `docker compose build` on the box (`BUILD_ON_HOST=1`) — compiles + runs the
-     `cargo test` gate; a failing test fails the deploy here,
-   - **validates** the image on `:8001` against a DB **copy** (health, `GET /`,
-     and an admin login that exercises DB read + scrypt) — aborts here, prod
-     untouched, if anything fails,
-   - **handover**: `systemctl restart boatsched-docker` (container opens the
-     live DB on `:8000` as the single writer),
-   - **health-gates** `:8000`; on failure **auto-rolls back** to the previous
-     image,
-   - prunes dangling images and prints the deployed image + DB backup path.
+Every push to `main`: the `test` job runs `nix flake check` (which builds the
+server, running the whole Rust test suite). If it passes, the `deploy` job runs
+`deploy/deploy.sh deploy@$SSH_HOST`:
 
-There is **no separate migration step** — the Rust server runs idempotent schema
-migrations at startup, so a (re)start applies any schema changes.
+1. `nix build .#boatsched .#boatsched-switch` (a failing test fails here).
+2. `nix copy` both to the box; the box pulls what it can from cache.nixos.org.
+3. On the box, `boatsched-switch <new package>`:
+   - runs the **new** server on `:8001` against a **copy** of the live DB and
+     checks `/api/health`, `GET /` and the bootstrap admin login — any failure
+     aborts with prod untouched;
+   - backs up the live DB to `/var/lib/boatsched/backups/`;
+   - points the `boatsched` profile at the new package and restarts the unit;
+   - health-gates `:8000` for 60 s and, on failure, **rolls the profile back to
+     the previous generation** and restarts.
 
----
-
-## Manual rollback
+By hand, from any machine with Nix and SSH access as `deploy`:
 
 ```bash
-# Roll back to a previous image:
-docker tag <previous-image-id> boatsched:local
-sudo systemctl restart boatsched-docker
+deploy/deploy.sh deploy@HOST
 ```
 
-The most recent `pre-cutover-*.db` backup in `/var/lib/boatsched` is a restore
-point for the data itself.
+### Rolling back by hand
+
+```bash
+P=/nix/var/nix/profiles/per-user/deploy/boatsched
+nix-env -p $P --list-generations
+nix-env -p $P --rollback            # or --switch-generation N
+sudo systemctl restart boatsched
+```
+
+Restore a DB backup: `sudo systemctl stop boatsched`, copy a file from
+`/var/lib/boatsched/backups/` over `/var/lib/boatsched/boatsched.db` (delete the
+`-wal`/`-shm` files), `sudo systemctl start boatsched`.
 
 ---
 
-## Capacity, solver, single-process assumptions
+## CI secrets (GitHub → Settings → Secrets and variables → Actions)
 
-One process/container, in-memory
-sessions/jobs/collab (a restart drops them), `SOLVER_WORKERS=2` to leave headroom
-on the shared vCPUs. OR-Tools maps executable memory, so do **not** add a
-seccomp/no-exec profile that blocks it.
+Unchanged from the Docker setup:
+
+| Secret | Contents |
+|---|---|
+| `SSH_PRIVATE_KEY` | Private half of the deploy keypair. |
+| `SSH_HOST` | Box hostname or IP. |
+| `SSH_USER` | `deploy` |
+| `SSH_KNOWN_HOSTS` | Pinned host key line(s) from `ssh-keyscan`. |
+
+---
+
+## One-time setup (migrating the Docker box)
+
+The DB directory, `/etc/boatsched/env` and the `deploy` user stay as they are.
+Run as root.
+
+1. **Install Nix** (multi-user) and let `deploy` copy unsigned store paths in:
+   ```bash
+   sh <(curl -fsSL https://nixos.org/nix/install) --daemon --yes
+   echo 'trusted-users = root deploy' >> /etc/nix/nix.conf
+   systemctl restart nix-daemon
+   install -d -o deploy -g deploy /nix/var/nix/profiles/per-user/deploy
+   ```
+2. **Install the unit** (don't start it yet):
+   ```bash
+   cp /opt/boatsched/deploy/boatsched.service /etc/systemd/system/
+   systemctl daemon-reload
+   ```
+   `SOLVER_WORKERS` is still read from `/etc/boatsched/env` (default 2);
+   `BUILD_ON_HOST` there is now unused and can go.
+3. **Sudoers** — replace the old `boatsched-docker` rules with:
+   ```
+   deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart boatsched, /usr/bin/systemctl stop boatsched
+   ```
+4. **Cut over** (about a minute of downtime): stop the container, then deploy
+   once by hand from your machine, then enable the unit for boot:
+   ```bash
+   ssh root@HOST 'systemctl disable --now boatsched-docker'
+   deploy/deploy.sh deploy@HOST
+   ssh root@HOST 'systemctl enable boatsched'
+   ```
+   If that first deploy fails it leaves the unit stopped (there is no previous
+   generation to roll back to); `systemctl enable --now boatsched-docker`
+   brings the container back while you look.
+5. **Clean up** once happy: remove `/etc/systemd/system/boatsched-docker.service`,
+   the `boatsched-validate` dirs, the old images (`docker image prune -a`), and
+   Docker itself if nothing else uses it. `/opt/boatsched` is no longer needed
+   by deploys either.
+
+---
+
+## nginx
+
+nginx and certbot stay hand-managed: `deploy/nginx.conf` is **not** installed by
+deploys. After changing it, copy it to `/etc/nginx/conf.d/boatsched.conf` on the
+box and run `nginx -t && systemctl reload nginx`.
+
+---
+
+## Day-to-day
+
+```bash
+journalctl -u boatsched -f            # app logs
+systemctl status boatsched
+ls /var/lib/boatsched/backups/
+```
+
+- **Secrets** stay in `/etc/boatsched/env` (root:deploy 0640, never in the Nix
+  store). Edit, then `sudo systemctl restart boatsched`.
+- **Disk:** profile generations older than 30 days are dropped after each
+  successful deploy; run `nix-collect-garbage` (as root) now and then, or add a
+  weekly timer, to free their store paths.
+- **Updating nixpkgs:** `nix flake update`, open a PR; CI builds and tests it.
+- **Changing frontend dependencies:** update `npmDepsHash` in `nix/web.nix`
+  (`nix run nixpkgs#prefetch-npm-deps web/package-lock.json`), or the build
+  fails with the expected hash.

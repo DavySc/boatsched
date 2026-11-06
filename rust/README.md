@@ -209,8 +209,7 @@ or operators may notice a difference:
   show under load.
 - **Lighter, simpler deployment.** A single statically-ish linked binary
   (`boatsched-server`) plus the OR-Tools shared lib replaces the Python runtime
-  + venv + wheels image. Lower idle memory and faster cold start; the Docker
-  image is smaller.
+  + venv + wheels image. Lower idle memory and faster cold start.
 - **Same security posture.** Production hardening (require_auth, secure cookies,
   login throttle, upload caps, generic 500s, security headers, admin bootstrap)
   is preserved with identical defaults, so admins configure it exactly as before.

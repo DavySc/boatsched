@@ -21,7 +21,7 @@ app, stores everything in one SQLite file, delegates constraint solving to
 Google OR-Tools CP-SAT through a small C++ FFI shim, and supports real-time
 collaborative schedule editing over a Yjs CRDT. A Lean 4 project (`spec/`) is
 the formal model of record for the pure domain core, mechanically checked
-against the real Rust in CI. Production is one Docker container behind nginx.
+against the real Rust in CI. Production is one Nix-built systemd service behind nginx.
 
 ```
                         ┌───────────────────────────┐
@@ -193,8 +193,8 @@ it into a single self-contained `web/dist/index.html` (via `vite-plugin-singlefi
 Yjs and y-websocket are npm dependencies, no CDN), which
 `rust/crates/server/build.rs` copies into the binary (`include_str!` of the copy in
 `OUT_DIR`; a placeholder page is embedded when `web/dist` doesn't exist, so
-`cargo test` needs no Node). That is *why* the Docker build context is the repo
-root and why the Dockerfile has a Node stage.
+`cargo test` needs no Node). That is *why* `nix/package.nix` builds the SPA
+(`nix/web.nix`) first and copies it into `web/dist` before compiling the server.
 
 Layout: `session.tsx` (login state, config, boat names), `Shell.tsx` (season and
 schedule pickers, solve/re-solve jobs, modals), `schedule/` (the planning screen),
@@ -239,13 +239,13 @@ proof. It runs in CI as the `verify-spec` job.
 
 ### Ops layer
 
-Production is one Docker container (`rust/Dockerfile`, both stages
-`ubuntu:24.04` to match the pinned OR-Tools SDK's ABI), behind nginx+certbot,
-managed by a systemd unit that runs `docker compose` in the foreground so
-`Restart=on-failure` works. CI (GitHub Actions) runs three jobs: `test`
-(blocking, `cargo test --workspace`), `verify-spec` (additive, `lake build`),
-and `deploy` (`needs: test`, main-only, SSHes to the box and runs
-`deploy/deploy.sh`). Full detail in §2g and `deploy/README.md`.
+Production is a Hetzner box (its own distro, plus Nix). `nix/package.nix`
+builds the server against nixpkgs' source-built OR-Tools (and runs `cargo test
+--workspace` in its check phase); `deploy/boatsched.service` runs it from a Nix
+profile behind nginx+certbot. CI (GitHub Actions) runs three jobs:
+`test` (blocking, `nix flake check`, which includes `cargo test --workspace`),
+`verify-spec` (additive, `lake build`), and `deploy` (`needs: test`, main-only,
+runs `deploy/deploy.sh`). Full detail in §2g and `deploy/README.md`.
 
 ---
 
@@ -346,7 +346,7 @@ invariants + objective values*, not bit-identical assignments — CP-SAT with
 
 `cd web && npm ci && npm run dev` serves the app with hot reload and proxies the
 API and the collab socket to a server on :8000 (`vite.config.ts`). `npm run build`
-is the gate (type-check + bundle); CI and the Docker build run it. Server calls go
+is the gate (type-check + bundle); the Nix build runs it. Server calls go
 through `api()` in `web/src/api.ts` — don't call `fetch` directly (it handles
 errors and session expiry). Anything that changes boat assignments goes through
 the Yjs hook (`useYSchedule`), never `POST /swap` — the doc is what `/commit`
@@ -379,11 +379,12 @@ weaken an existing gate without explicit permission** — this is an
 explicit repo rule (`CLAUDE.md`), not just good practice, because the whole
 point of the spec/CI investment is that future changes (including
 agent-authored ones) can be trusted *because* the gates can't be quietly
-loosened. The actual production cutover is `deploy/deploy.sh`, run over SSH by
-the `deploy` job: backup the live DB → build (or pull) the image → stand up a
-throwaway copy on `:8001` against a *copy* of the DB and health/login-check it
-→ hand over the real `:8000` service → health-gate it → automatically roll
-back to the previous image on failure. Full detail (including one-time box
+loosened. The actual production cutover is `deploy/deploy.sh`, run by the `deploy`
+job: build → `nix copy` to the box → `boatsched-switch` (`nix/switch.sh`) runs
+the new server on `:8001` against a *copy* of the DB and health/login-checks it
+→ backs up the live DB → switches the profile and restarts the unit →
+health-gates `:8000` → rolls back to the previous profile generation on
+failure. Full detail (including one-time box
 provisioning) is in `deploy/README.md` — this document only needs you to know
 that the shape exists and where it lives.
 
